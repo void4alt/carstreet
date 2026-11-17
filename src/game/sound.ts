@@ -563,6 +563,24 @@ class SoundEngine {
   private lastCollisionSoundTime = 0;
   private lastFlutterSoundTime = 0;
 
+  // Realistic Engine Startup Sequence State Machine
+  private isEngineStarting = false;
+  private startupStartTime = 0;
+  private startupSoundType: EngineSoundType = 'i6_turbo';
+  private startupProfileId?: EngineAudioProfileId;
+  private startupCustom?: Partial<VehicleCustomization>;
+
+  /**
+   * Pre-warms the Web Audio API context and generates cached noise buffers on early user gestures
+   * (pointerdown/keydown/touchstart) so entering gameplay has zero initialization lag or audio popping.
+   */
+  public warmup(): void {
+    this.init();
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+  }
+
   public init() {
     if (this.initialized || typeof window === 'undefined') return;
     try {
@@ -616,12 +634,12 @@ class SoundEngine {
       this.exhaustShaper.connect(this.engineMasterGain);
       this.engineMasterGain.connect(this.masterCompressor);
 
-      // Layer 1: Idle & Sub-Bass Exhaust Pulse
+      // Layer 1: Idle & Sub-Bass Exhaust Pulse (initialized silent to prevent pop)
       this.idleOsc = this.ctx.createOscillator();
       this.idleOsc.type = 'triangle';
       this.idleOsc.frequency.value = 34;
       this.idleGain = this.ctx.createGain();
-      this.idleGain.gain.value = 0.52;
+      this.idleGain.gain.value = 0.0;
       this.idleOsc.connect(this.idleGain);
       this.idleGain.connect(this.exhaustSubFilter);
       this.idleOsc.start();
@@ -631,7 +649,7 @@ class SoundEngine {
       this.lowOsc.type = 'sawtooth';
       this.lowOsc.frequency.value = 58;
       this.lowGain = this.ctx.createGain();
-      this.lowGain.gain.value = 0.58;
+      this.lowGain.gain.value = 0.0;
       this.lowOsc.connect(this.lowGain);
       this.lowGain.connect(this.exhaustSubFilter);
       this.lowOsc.start();
@@ -641,7 +659,7 @@ class SoundEngine {
       this.midOsc.type = 'square';
       this.midOsc.frequency.value = 110;
       this.midGain = this.ctx.createGain();
-      this.midGain.gain.value = 0.32;
+      this.midGain.gain.value = 0.0;
       this.midOsc.connect(this.midGain);
       this.midGain.connect(this.exhaustSubFilter);
       this.midOsc.start();
@@ -656,24 +674,26 @@ class SoundEngine {
       this.highGain.connect(this.exhaustSubFilter);
       this.highOsc.start();
 
-      // Rich pink/brownish-weighted noise buffer for realistic rubber friction, induction air & road rush
-      const bufferSize = this.ctx.sampleRate * 2.0;
-      const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-      const output = noiseBuffer.getChannelData(0);
-      let b0 = 0;
-      let b1 = 0;
-      let b2 = 0;
-      for (let i = 0; i < bufferSize; i++) {
-        const white = Math.random() * 2 - 1;
-        b0 = 0.997 * b0 + white * 0.029;
-        b1 = 0.985 * b1 + white * 0.032;
-        b2 = 0.950 * b2 + white * 0.048;
-        output[i] = Math.max(-1, Math.min(1, (b0 + b1 + b2 + white * 0.55) * 0.95));
+      // Rich pink/brownish-weighted noise buffer - allocated and cached once
+      if (!this.noiseBuffer) {
+        const bufferSize = Math.floor(this.ctx.sampleRate * 1.5);
+        const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const output = noiseBuffer.getChannelData(0);
+        let b0 = 0;
+        let b1 = 0;
+        let b2 = 0;
+        for (let i = 0; i < bufferSize; i++) {
+          const white = Math.random() * 2 - 1;
+          b0 = 0.997 * b0 + white * 0.029;
+          b1 = 0.985 * b1 + white * 0.032;
+          b2 = 0.950 * b2 + white * 0.048;
+          output[i] = Math.max(-1, Math.min(1, (b0 + b1 + b2 + white * 0.55) * 0.95));
+        }
+        this.noiseBuffer = noiseBuffer;
       }
-      this.noiseBuffer = noiseBuffer;
 
       const noiseNode = this.ctx.createBufferSource();
-      noiseNode.buffer = noiseBuffer;
+      noiseNode.buffer = this.noiseBuffer;
       noiseNode.loop = true;
 
       // Breathy Turbocharger Air Spool Filter (filtered airflow instead of pure sine beep!)
@@ -785,7 +805,7 @@ class SoundEngine {
     if (settings.audioDynamicRange) {
       this.audioDynamicRange = settings.audioDynamicRange;
       if (this.masterCompressor && this.ctx) {
-        const t = this.ctx.currentTime;
+        const t = Math.max(0.001, this.ctx.currentTime);
         if (this.audioDynamicRange === 'night') {
           this.masterCompressor.threshold.setTargetAtTime(-22, t, 0.05);
           this.masterCompressor.ratio.setTargetAtTime(8.0, t, 0.05);
@@ -899,7 +919,34 @@ class SoundEngine {
     const t = this.ctx.currentTime;
     const params = getEngineAcousticParameters(soundType, profileId);
     const exCfg = resolveExhaustAudioConfig(soundType, profileId, custom);
-    const rpmNorm = Math.min(1.18, Math.max(0, (rpm - 850) / 6800));
+
+    let effectiveRpm = rpm;
+    let startupVolumeMult = 1.0;
+
+    if (this.isEngineStarting) {
+      const elapsed = t - this.startupStartTime;
+      if (elapsed < 0.82 && throttle < 0.12) {
+        if (elapsed < 0.20) {
+          // Cranking phase: Starter motor is spinning flywheel, cylinders haven't fired yet
+          effectiveRpm = 360 + (elapsed / 0.20) * 120;
+          startupVolumeMult = 0.0;
+        } else if (elapsed < 0.44) {
+          // Ignition catch & roar flare: Combustion catches, RPM blips to ~1520 RPM
+          const p = (elapsed - 0.20) / 0.24;
+          effectiveRpm = 480 + (1 - Math.cos(p * Math.PI)) * 0.5 * 1040;
+          startupVolumeMult = Math.min(1.0, p * 1.25);
+        } else {
+          // Settle to idle: RPM gracefully eases from 1520 down to idle 950 RPM
+          const p = (elapsed - 0.44) / 0.38;
+          effectiveRpm = 1520 - (1 - Math.cos(p * Math.PI)) * 0.5 * 570;
+          startupVolumeMult = 1.0;
+        }
+      } else {
+        this.isEngineStarting = false;
+      }
+    }
+
+    const rpmNorm = Math.min(1.18, Math.max(0, (effectiveRpm - 850) / 6800));
 
     if (this.exhaustSubFilter) {
       this.exhaustSubFilter.gain.setTargetAtTime(exCfg.subBassDb, t, 0.06);
@@ -959,7 +1006,11 @@ class SoundEngine {
       ((this.engineAudioIntensity + this.exhaustAudioIntensity) * 0.5);
     const loadBoost =
       (0.082 + throttle * 0.056 + rpmNorm * 0.038 + vtecActive * 0.014) * exCfg.volumeMultiplier;
-    this.engineMasterGain.gain.setTargetAtTime(loadBoost * effectiveEngineGain, t, 0.045);
+    this.engineMasterGain.gain.setTargetAtTime(
+      loadBoost * effectiveEngineGain * startupVolumeMult,
+      t,
+      0.045
+    );
 
     // Breathy Turbocharger Induction Air Spool OR Straight-Cut Transmission Mesh
     if (this.turboFilter && this.turboGain) {
@@ -1034,68 +1085,51 @@ class SoundEngine {
   }
 
   public playEngineStartup(
-    soundType: EngineSoundType = 'i6_turbo',
-    profileId?: EngineAudioProfileId
+    _soundType: EngineSoundType = 'i6_turbo',
+    _profileId?: EngineAudioProfileId,
+    _custom?: Partial<VehicleCustomization>
   ) {
     if (this.muted) return;
     this.init();
     if (!this.ctx || !this.masterCompressor) return;
     try {
-      const t = this.ctx.currentTime;
-      const params = getEngineAcousticParameters(soundType, profileId);
-      const idleF = params.baseFreq;
+      const t = Math.max(0.001, this.ctx.currentTime);
+      this.isEngineStarting = true;
+      this.startupStartTime = t;
 
+      // Authentic starter motor mechanical crank pulses (2 pulses during 0.0s - 0.16s)
       if (this.noiseBuffer) {
-        for (const crankOffset of [0.0, 0.08]) {
+        for (const crankOffset of [0.0, 0.08, 0.15]) {
           const crankSrc = this.ctx.createBufferSource();
           crankSrc.buffer = this.noiseBuffer;
           const crankFilter = this.ctx.createBiquadFilter();
           crankFilter.type = 'bandpass';
-          crankFilter.frequency.setValueAtTime(190, t + crankOffset);
-          crankFilter.Q.value = 3.2;
+          crankFilter.frequency.setValueAtTime(210, t + crankOffset);
+          crankFilter.Q.value = 3.5;
           const crankGain = this.ctx.createGain();
-          crankGain.gain.setValueAtTime(0.042 * this.engineVolume, t + crankOffset);
-          crankGain.gain.exponentialRampToValueAtTime(0.001, t + crankOffset + 0.065);
+          crankGain.gain.setValueAtTime(0.045 * this.engineVolume, t + crankOffset);
+          crankGain.gain.exponentialRampToValueAtTime(0.001, t + crankOffset + 0.06);
           crankSrc.connect(crankFilter);
           crankFilter.connect(crankGain);
           crankGain.connect(this.masterCompressor);
           crankSrc.start(t + crankOffset);
-          crankSrc.stop(t + crankOffset + 0.07);
+          crankSrc.stop(t + crankOffset + 0.065);
         }
       }
 
-      const osc = this.ctx.createOscillator();
-      const subOsc = this.ctx.createOscillator();
-      const lpFilter = this.ctx.createBiquadFilter();
-      lpFilter.type = 'lowpass';
-      lpFilter.frequency.setValueAtTime(260, t + 0.14);
-      lpFilter.frequency.exponentialRampToValueAtTime(560, t + 0.28);
-      lpFilter.frequency.exponentialRampToValueAtTime(230, t + 0.66);
-
-      const gain = this.ctx.createGain();
-      osc.type = 'sawtooth';
-      subOsc.type = 'triangle';
-      osc.frequency.setValueAtTime(idleF * 0.75, t + 0.14);
-      osc.frequency.exponentialRampToValueAtTime(idleF * 1.9, t + 0.28);
-      osc.frequency.exponentialRampToValueAtTime(idleF, t + 0.66);
-
-      subOsc.frequency.setValueAtTime(idleF * 0.38, t + 0.14);
-      subOsc.frequency.exponentialRampToValueAtTime(idleF * 0.95, t + 0.28);
-      subOsc.frequency.exponentialRampToValueAtTime(idleF * 0.5, t + 0.66);
-
-      gain.gain.setValueAtTime(0.001, t);
-      gain.gain.setValueAtTime(0.045 * this.engineVolume, t + 0.14);
-      gain.gain.linearRampToValueAtTime(0.115 * this.engineVolume, t + 0.26);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.68);
-
-      osc.connect(lpFilter);
-      subOsc.connect(lpFilter);
-      lpFilter.connect(gain);
-      gain.connect(this.masterCompressor);
-      osc.start(t + 0.14);
-      subOsc.start(t + 0.14);
-      osc.stop(t + 0.7);
-      subOsc.stop(t + 0.7);
+      // Starter motor electric high-speed whine (cranks 0.0s to 0.20s until ignition catches)
+      const starterWhine = this.ctx.createOscillator();
+      starterWhine.type = 'sine';
+      starterWhine.frequency.setValueAtTime(190, t);
+      starterWhine.frequency.exponentialRampToValueAtTime(255, t + 0.19);
+      const starterGain = this.ctx.createGain();
+      starterGain.gain.setValueAtTime(0.001, t);
+      starterGain.gain.linearRampToValueAtTime(0.032 * this.engineVolume, t + 0.04);
+      starterGain.gain.exponentialRampToValueAtTime(0.0005, t + 0.21);
+      starterWhine.connect(starterGain);
+      starterGain.connect(this.masterCompressor);
+      starterWhine.start(t);
+      starterWhine.stop(t + 0.22);
     } catch {
       // Ignore
     }
@@ -1124,7 +1158,7 @@ class SoundEngine {
     this.lastFlutterSoundTime = now;
 
     try {
-      const t = this.ctx.currentTime;
+      const t = Math.max(0.001, this.ctx.currentTime);
       const clampedRpm = Math.max(0.3, Math.min(1.1, rpmNorm));
       const clampedBoost = Math.max(0.35, Math.min(1.25, boostLoad));
       const vol = this.turboVolume * exCfg.volumeMultiplier * clampedBoost;
@@ -1214,7 +1248,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.noiseBuffer || !this.masterCompressor) return;
     try {
-      const t = this.ctx.currentTime;
+      const t = Math.max(0.001, this.ctx.currentTime);
       const src = this.ctx.createBufferSource();
       src.buffer = this.noiseBuffer;
       const filter = this.ctx.createBiquadFilter();
@@ -1260,7 +1294,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.masterCompressor) return;
     try {
-      const t = this.ctx.currentTime;
+      const t = Math.max(0.001, this.ctx.currentTime);
 
       if (this.engineFilter) {
         const curFreq = this.engineFilter.frequency.value || 460;
@@ -1297,7 +1331,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.masterCompressor || !this.noiseBuffer) return;
     try {
-      const t = this.ctx.currentTime;
+      const t = Math.max(0.001, this.ctx.currentTime);
       const src = this.ctx.createBufferSource();
       src.buffer = this.noiseBuffer;
       const filter = this.ctx.createBiquadFilter();
@@ -1326,7 +1360,7 @@ class SoundEngine {
     if (now - this.lastCollisionSoundTime < 160) return;
     this.lastCollisionSoundTime = now;
     try {
-      const t = this.ctx.currentTime;
+      const t = Math.max(0.001, this.ctx.currentTime);
       const clampedSev = Math.max(0.15, Math.min(1.0, severity));
       const amp = Math.min(0.14, 0.04 + clampedSev * 0.09) * this.collisionVolume * this.sfxVolume;
 
@@ -1389,7 +1423,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.masterCompressor || !this.noiseBuffer) return;
     try {
-      const t = this.ctx.currentTime;
+      const t = Math.max(0.001, this.ctx.currentTime);
       const exVol = Math.max(0.5, Math.min(1.6, custom?.exhaustVolume ?? 1.1));
       const sysBoost =
         custom?.exhaustSystem === 'straight_pipe' || custom?.exhaustSystem === 'titanium_race'
@@ -1507,7 +1541,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.masterCompressor) return;
     try {
-      const t = this.ctx.currentTime;
+      const t = Math.max(0.001, this.ctx.currentTime);
       const params = getEngineAcousticParameters(soundType, profileId);
       const exCfg = resolveExhaustAudioConfig(soundType, profileId, custom);
       const osc = this.ctx.createOscillator();
@@ -1570,7 +1604,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.masterCompressor || !this.noiseBuffer) return;
     try {
-      const t = this.ctx.currentTime;
+      const t = Math.max(0.001, this.ctx.currentTime);
       const src = this.ctx.createBufferSource();
       src.buffer = this.noiseBuffer;
       const bp = this.ctx.createBiquadFilter();
@@ -1603,7 +1637,7 @@ class SoundEngine {
     this.init();
     if (!this.ctx || !this.masterCompressor || !this.noiseBuffer) return;
     try {
-      const t = this.ctx.currentTime;
+      const t = Math.max(0.001, this.ctx.currentTime);
       const src = this.ctx.createBufferSource();
       src.buffer = this.noiseBuffer;
       const filter = this.ctx.createBiquadFilter();

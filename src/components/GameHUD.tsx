@@ -97,6 +97,7 @@ interface GameHUDProps {
   onSelectViewpoint: (idx: number) => void;
   onResetCar: () => void;
   onToggleMute: () => void;
+  isStartingGame?: boolean;
   onStartGame: () => void;
   onOpenGarage: () => void;
   onPauseGame: () => void;
@@ -159,6 +160,7 @@ export function GameHUD({
   onSelectViewpoint,
   onResetCar,
   onToggleMute,
+  isStartingGame = false,
   onStartGame,
   onOpenGarage,
   onPauseGame,
@@ -1291,32 +1293,34 @@ export function GameHUD({
 
             <button
               type="button"
+              disabled={isStartingGame}
               onClick={() => {
                 soundEngine.playUiChime(600);
                 setIsTestDrive(true);
                 onStartGame();
               }}
-              className="px-3 py-1.5 rounded-xl font-display font-bold text-xs uppercase tracking-wider bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/60 text-emerald-300 cursor-pointer whitespace-nowrap shrink-0"
+              className="px-3 py-1.5 rounded-xl font-display font-bold text-xs uppercase tracking-wider bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/60 text-emerald-300 cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-60 disabled:cursor-wait"
               title="Test your current drift setup on the track and return to the Garage anytime"
             >
-              🔧 Test Drive
+              {isStartingGame ? '🏎️ Starting...' : '🔧 Test Drive'}
             </button>
 
             <button
               type="button"
               data-start="true"
+              disabled={isStartingGame}
               onClick={() => {
                 soundEngine.playUiChime(660);
                 setIsTestDrive(false);
                 onStartGame();
               }}
-              className={`px-3.5 py-1.5 rounded-xl font-display font-bold text-xs uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0 shadow-lg ${
+              className={`px-3.5 py-1.5 rounded-xl font-display font-bold text-xs uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0 shadow-lg disabled:opacity-60 disabled:cursor-wait ${
                 mapId === 'mountain'
                   ? 'bg-amber-500 hover:bg-amber-400 text-stone-950'
                   : 'bg-orange-500 hover:bg-orange-400 text-stone-950'
               }`}
             >
-              Drive {mapDef.name} →
+              {isStartingGame ? '🏎️ Starting...' : `Drive ${mapDef.name} →`}
             </button>
           </div>
         </div>
@@ -6500,15 +6504,18 @@ export function GameHUD({
             <button
               type="button"
               data-start="true"
+              disabled={isStartingGame}
               onClick={(e) => {
                 e.currentTarget.blur();
                 soundEngine.playUiChime(640);
                 setIsTestDrive(false);
                 onStartGame();
               }}
-              className="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-display font-bold text-base tracking-wider uppercase cursor-pointer"
+              className="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-display font-bold text-base tracking-wider uppercase cursor-pointer disabled:opacity-75 disabled:cursor-wait"
             >
-              Start {(gameSettings.handlingMode ?? 'drift') === 'drift' ? 'Drifting' : 'Racing'} — {mapDef.name}
+              {isStartingGame
+                ? '🏎️ Starting Engine...'
+                : `Start ${(gameSettings.handlingMode ?? 'drift') === 'drift' ? 'Drifting' : 'Racing'} — ${mapDef.name}`}
             </button>
 
             <button

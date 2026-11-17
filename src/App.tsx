@@ -115,6 +115,26 @@ export default function App() {
     currentFrame: 0,
     totalFrames: 0,
   });
+  const [isStartingGame, setIsStartingGame] = useState<boolean>(false);
+
+  // Initialize and warm up sound engine ahead-of-time so CoreAudio device is already active
+  useEffect(() => {
+    soundEngine.warmup();
+    const onUserInteraction = () => {
+      soundEngine.warmup();
+      window.removeEventListener('pointerdown', onUserInteraction);
+      window.removeEventListener('keydown', onUserInteraction);
+      window.removeEventListener('touchstart', onUserInteraction);
+    };
+    window.addEventListener('pointerdown', onUserInteraction, { passive: true });
+    window.addEventListener('keydown', onUserInteraction, { passive: true });
+    window.addEventListener('touchstart', onUserInteraction, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', onUserInteraction);
+      window.removeEventListener('keydown', onUserInteraction);
+      window.removeEventListener('touchstart', onUserInteraction);
+    };
+  }, []);
 
   const [gameSettings, setGameSettings] = useState<GameSettings>(() => {
     let saved: Partial<GameSettings> = {};
@@ -341,13 +361,23 @@ export default function App() {
   }, []);
 
   const handleStartGame = useCallback(() => {
-    soundEngine.init();
-    soundEngine.playEngineStartup(selectedVehicle.soundType, selectedVehicle.engineAudioProfile);
+    if (gameState === 'playing') return;
+    soundEngine.warmup();
+    soundEngine.playEngineStartup(
+      selectedVehicle.soundType,
+      selectedVehicle.engineAudioProfile,
+      activeCustomization
+    );
     setPhotoModeState((prev) => ({ ...prev, active: false }));
     setReplayState((prev) => ({ ...prev, active: false }));
     document.body.dataset.state = 'playing';
     setGameState('playing');
-  }, [selectedVehicle.soundType, selectedVehicle.engineAudioProfile]);
+  }, [
+    gameState,
+    selectedVehicle.soundType,
+    selectedVehicle.engineAudioProfile,
+    activeCustomization,
+  ]);
 
   const handleOpenGarage = useCallback(() => {
     virtualInputRef.current = {};
@@ -453,6 +483,7 @@ export default function App() {
         gameSettings={gameSettings}
         activeViewpointIdx={activeViewpointIdx}
         isMuted={isMuted}
+        isStartingGame={isStartingGame}
         selectedVehicle={selectedVehicle}
         customization={activeCustomization}
         garageCameraView={garageCameraView}
