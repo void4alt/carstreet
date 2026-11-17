@@ -1,0 +1,6 @@
+{
+  "name": "Touge & Sakura Drift 3D",
+  "description": "Explore and drift across two detailed 3D Japanese environments: Akina Mountain Touge at sunset and Yoshino Cherry Blossom Paradise.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
