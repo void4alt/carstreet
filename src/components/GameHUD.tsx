@@ -283,6 +283,7 @@ export function GameHUD({
   );
   const [fsActive, setFsActive] = useState(() => isFullscreen());
   const [iosSafariTip, setIosSafariTip] = useState(false);
+  const [mobileGarageTab, setMobileGarageTab] = useState<'specs' | 'customize' | 'roster' | 'none'>('customize');
 
   useEffect(() => {
     const updateFs = () => {
@@ -1332,6 +1333,32 @@ export function GameHUD({
               </button>
             </div>
 
+            {isMobileViewport && (
+              <div className="flex items-center gap-1 bg-stone-900 border border-stone-800 rounded-xl p-0.5 shrink-0 overflow-x-auto">
+                {(
+                  [
+                    { id: 'specs', label: '🚗 Specs' },
+                    { id: 'customize', label: '⚙️ Tune' },
+                    { id: 'roster', label: '🏎️ Cars' },
+                    { id: 'none', label: '👁️ 3D' },
+                  ] as const
+                ).map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setMobileGarageTab(t.id)}
+                    className={`px-2 py-1 rounded-lg text-[10px] font-mono-tabular font-bold cursor-pointer whitespace-nowrap ${
+                      mobileGarageTab === t.id
+                        ? 'bg-amber-500 text-stone-950'
+                        : 'text-stone-300 hover:text-white'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
             <button
               type="button"
               disabled={isStartingGame}
@@ -1392,7 +1419,9 @@ export function GameHUD({
           }`}
         >
           {/* LEFT PANEL: Vehicle Specifications & Interactive Showroom Controls */}
-          <div className="pointer-events-auto w-72 md:w-80 bg-stone-950/90 border border-stone-800/95 rounded-2xl p-4 shadow-xl flex flex-col gap-3.5 max-h-full overflow-y-auto">
+          <div className={`pointer-events-auto w-72 md:w-80 bg-stone-950/90 border border-stone-800/95 rounded-2xl p-4 shadow-xl flex flex-col gap-3.5 max-h-full overflow-y-auto ${
+            isMobileViewport && mobileGarageTab !== 'specs' ? 'hidden' : ''
+          }`}>
             <div>
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-mono-tabular uppercase tracking-wider text-orange-400 font-semibold">
@@ -1631,7 +1660,9 @@ export function GameHUD({
           </div>
 
           {/* RIGHT PANEL: Modular Customization Foundation */}
-          <div className="pointer-events-auto w-72 md:w-80 bg-stone-950/90 border border-stone-800/95 rounded-2xl p-4 shadow-xl flex flex-col gap-3.5 max-h-full overflow-y-auto">
+          <div className={`pointer-events-auto w-72 md:w-80 bg-stone-950/90 border border-stone-800/95 rounded-2xl p-4 shadow-xl flex flex-col gap-3.5 max-h-full overflow-y-auto ${
+            isMobileViewport && mobileGarageTab !== 'customize' ? 'hidden' : ''
+          }`}>
             <div className="flex items-center justify-between">
               <div className="text-xs font-display font-bold uppercase tracking-wider text-stone-200">
                 CUSTOMIZATION WORKSHOP
@@ -3219,7 +3250,7 @@ export function GameHUD({
         {/* BOTTOM ROSTER: 25-Vehicle JDM & Exotic Collection Selector with Manufacturer Filter */}
         <div
           className={`relative z-10 pointer-events-auto bg-stone-950/92 border border-stone-800 rounded-2xl p-3 shadow-2xl flex flex-col gap-2 ${
-            showWorkshopPanels ? '' : 'hidden'
+            showWorkshopPanels && (!isMobileViewport || mobileGarageTab === 'roster') ? '' : 'hidden'
           }`}
         >
           <div className="flex flex-wrap items-center justify-between gap-2 px-1">
@@ -6268,7 +6299,7 @@ export function GameHUD({
   // ---------------------------------------------------------------------------
   if (gameState === 'title') {
     return (
-      <div className="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between p-6 md:p-10">
+      <div className="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between p-3 sm:p-6 md:p-10">
         {/* Clean dark gradient on left third keeping 65% of the live 3D car & mountain viewport open */}
         <div
           className="fixed inset-0 pointer-events-none"
@@ -6279,7 +6310,7 @@ export function GameHUD({
         />
 
         {/* Top Bar: Active Machine Summary & Primary Navigation Bar (Play, Garage, Customization, Multiplayer, Settings, Profile) */}
-        <div className="relative z-10 pointer-events-auto flex flex-wrap items-center justify-between gap-3">
+        <div className="relative z-10 pointer-events-auto flex flex-wrap items-center justify-between gap-2 sm:gap-3">
           <div className="flex items-center gap-3 bg-zinc-950/90 border border-white/10 rounded-xl px-3.5 py-2">
             <span
               className="w-3.5 h-3.5 rounded-full border border-white/30 shrink-0"
@@ -6393,21 +6424,21 @@ export function GameHUD({
         </div>
 
         {/* Left-Aligned Main Automotive Title & Configuration Stack */}
-        <div className="relative z-10 max-w-xl pointer-events-auto flex flex-col gap-4 my-auto">
-          <div className="flex flex-col gap-1.5">
-            <div className="text-xs font-mono-tabular uppercase tracking-widest text-amber-400">
+        <div className="relative z-10 max-w-xl pointer-events-auto flex flex-col gap-2.5 sm:gap-4 my-auto max-h-[calc(100dvh-80px)] overflow-y-auto pr-1">
+          <div className="flex flex-col gap-1 sm:gap-1.5">
+            <div className="text-[10px] sm:text-xs font-mono-tabular uppercase tracking-widest text-amber-400">
               MOUNTAIN TOUGE &amp; TANDEM DRIFT SIMULATOR
             </div>
-            <h1 className="text-4xl md:text-5xl font-display font-bold italic tracking-tight text-zinc-100">
+            <h1 className="text-2xl sm:text-4xl md:text-5xl font-display font-bold italic tracking-tight text-zinc-100">
               TOUGE &amp; SAKURA <span className="text-amber-400">DRIFT 3D</span>
             </h1>
-            <p className="text-sm text-zinc-300 leading-relaxed max-w-md">
+            <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed max-w-md hidden sm:block">
                Precision RWD/AWD weight-transfer drift physics, {VEHICLES_CATALOG.length} customizable JDM &amp; exotic machines, and live online tandem lobbies.
             </p>
           </div>
 
           {/* Driving Mode Selection: DRIFT MODE vs RACE MODE */}
-          <div className="grid grid-cols-2 gap-2.5" role="group" aria-label="Select Driving Mode">
+          <div className="grid grid-cols-2 gap-2 sm:gap-2.5" role="group" aria-label="Select Driving Mode">
             {(
               [
                 {
@@ -6589,7 +6620,7 @@ export function GameHUD({
           </div>
 
           {/* Primary Action Row */}
-          <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2 pt-1 shrink-0">
             <button
               type="button"
               data-start="true"
@@ -6603,7 +6634,7 @@ export function GameHUD({
                 }
                 onStartGame();
               }}
-              className="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-display font-bold text-base tracking-wider uppercase cursor-pointer disabled:opacity-75 disabled:cursor-wait"
+              className="px-4 sm:px-6 py-2.5 sm:py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-display font-bold text-xs sm:text-base tracking-wider uppercase cursor-pointer disabled:opacity-75 disabled:cursor-wait"
             >
               {isStartingGame
                 ? '🏎️ Starting Engine...'
@@ -6616,7 +6647,7 @@ export function GameHUD({
                 soundEngine.playUiChime(540);
                 onOpenGarage();
               }}
-              className="px-4 py-3 rounded-xl bg-zinc-900/95 hover:bg-zinc-800 border border-white/15 text-zinc-100 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="px-3 sm:px-4 py-2 sm:py-3 rounded-xl bg-zinc-900/95 hover:bg-zinc-800 border border-white/15 text-zinc-100 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
             >
               3D Garage &amp; Tuning [G]
             </button>
@@ -6627,14 +6658,14 @@ export function GameHUD({
                 soundEngine.playUiChime(580);
                 setShowMultiplayerModal(true);
               }}
-              className="px-4 py-3 rounded-xl bg-zinc-900/95 hover:bg-zinc-800 border border-white/15 text-zinc-100 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="px-3 sm:px-4 py-2 sm:py-3 rounded-xl bg-zinc-900/95 hover:bg-zinc-800 border border-white/15 text-zinc-100 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
             >
               Online Multiplayer
             </button>
           </div>
         </div>
 
-        <div className="relative z-10 text-xs text-zinc-400 font-mono-tabular tracking-wide">
+        <div className="relative z-10 text-xs text-zinc-400 font-mono-tabular tracking-wide hidden sm:block">
           WASD / Arrows Drive &nbsp;·&nbsp; Space Handbrake &nbsp;·&nbsp; Shift N2O &nbsp;·&nbsp; V Drift/Race &nbsp;·&nbsp; G Garage &nbsp;·&nbsp; C Camera
         </div>
 
@@ -6823,7 +6854,7 @@ export function GameHUD({
           {/* Subtle Session & Utility Stack Beside Minimap */}
           <div className="flex flex-col gap-1.5">
             {/* Compact Top Action Bar (Pause, Reset, Camera, Garage, World Map, Settings) */}
-            <div className="flex flex-nowrap items-center gap-1 bg-neutral-950/88 border border-white/15 rounded-xl p-1 shadow-lg">
+            <div className="flex flex-nowrap items-center gap-1 bg-neutral-950/88 border border-white/15 rounded-xl p-1 shadow-lg max-w-[calc(100vw-150px)] sm:max-w-none overflow-x-auto">
               <button
                 type="button"
                 tabIndex={-1}
@@ -6905,7 +6936,7 @@ export function GameHUD({
                   soundEngine.playUiChime(480);
                   onSelectMap(mapId === 'mountain' ? 'blossom' : 'mountain');
                 }}
-                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[11px] font-mono-tabular text-neutral-300 hover:text-white cursor-pointer whitespace-nowrap hidden lg:inline-flex items-center shrink-0"
+                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[11px] font-mono-tabular text-neutral-300 hover:text-white cursor-pointer whitespace-nowrap inline-flex items-center shrink-0"
                 title="Switch Mountain Map"
               >
                 {mapId === 'mountain' ? 'Mt. Haruna' : 'Sakura Pass'}
@@ -6921,7 +6952,7 @@ export function GameHUD({
                   soundEngine.playUiChime(480);
                   onToggleTimeOfDay();
                 }}
-                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[11px] font-mono-tabular capitalize text-neutral-300 cursor-pointer whitespace-nowrap hidden lg:inline-flex items-center shrink-0"
+                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[11px] font-mono-tabular capitalize text-neutral-300 cursor-pointer whitespace-nowrap inline-flex items-center shrink-0"
               >
                 {timeOfDay === 'day'
                   ? 'Afternoon'
@@ -7000,10 +7031,10 @@ export function GameHUD({
               </div>
             )}
 
-            {/* Desktop Sector Quick-Jump Pills + Secondary Utility Triggers */}
-            {!hudCollapsed && effectiveControlScheme === 'pc' && (
+            {/* Sector Quick-Jump Pills + Secondary Utility Triggers */}
+            {!hudCollapsed && (
               <div
-                className="hidden lg:flex flex-wrap items-center gap-1 bg-neutral-950/82 border border-white/10 rounded-xl p-1"
+                className="flex flex-nowrap sm:flex-wrap items-center gap-1 bg-neutral-950/82 border border-white/10 rounded-xl p-1 max-w-[calc(100vw-150px)] sm:max-w-none overflow-x-auto"
                 role="group"
                 aria-label="Map Viewpoints"
               >
@@ -7123,7 +7154,7 @@ export function GameHUD({
 
         {/* TOP-CENTER: Clean, Restrained Automotive Drift Score Readout */}
         {!hudCollapsed && (
-          <div className="hidden sm:flex flex-col items-center gap-1 pointer-events-none shrink-0">
+          <div className="flex flex-col items-center gap-1 pointer-events-none shrink-0 scale-90 sm:scale-100">
             <div
               ref={driftBannerRef}
               className="flex items-center gap-2 lg:gap-3 bg-neutral-950/88 border border-white/15 rounded-xl px-2.5 lg:px-3.5 py-1 lg:py-1.5 transition-opacity font-mono-tabular tabular-nums"
@@ -7474,8 +7505,8 @@ export function GameHUD({
         className="pointer-events-none flex flex-col items-start justify-center my-auto gap-2.5 relative"
       >
         {/* Live Multiplayer Room Leaderboard, Race Controls & Tandem Proximity Sync */}
-        {mpConnectedRoom && !hudCollapsed && !photoModeState.active && !replayState.active && effectiveControlScheme === 'pc' && (
-          <div className="pointer-events-auto bg-neutral-950/92 border border-white/15 rounded-xl p-3 w-68 flex flex-col gap-2 font-mono-tabular tabular-nums">
+        {mpConnectedRoom && !hudCollapsed && !photoModeState.active && !replayState.active && (
+          <div className="pointer-events-auto bg-neutral-950/92 border border-white/15 rounded-xl p-2.5 sm:p-3 w-56 sm:w-68 flex flex-col gap-2 font-mono-tabular tabular-nums">
             <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
               <div className="flex flex-col">
                 <span className="text-[10px] uppercase text-neutral-200 font-bold truncate max-w-[165px]">
@@ -8502,7 +8533,7 @@ export function GameHUD({
           </div>
         )}
 
-      {/* BOTTOM PERIMETER (PC Mode: Unobstructed driving view with minimal HUD toggle pill) */}
+      {/* BOTTOM PERIMETER (Unobstructed driving view with minimal HUD toggle pill) */}
       <div
         className={
           photoModeState.active || replayState.active
@@ -8510,21 +8541,19 @@ export function GameHUD({
             : 'flex items-end justify-center w-full'
         }
       >
-        {effectiveControlScheme === 'pc' && (
-          <div className="pointer-events-auto flex items-center gap-2">
-            <button
-              type="button"
-              tabIndex={-1}
-              onClick={(e) => {
-                e.currentTarget.blur();
-                setHudCollapsed((prev) => !prev);
-              }}
-              className="px-2.5 py-1 rounded-lg bg-neutral-950/80 border border-white/12 text-[10px] font-mono-tabular text-neutral-400 hover:text-white cursor-pointer whitespace-nowrap"
-            >
-              {hudCollapsed ? '▴ Show HUD [H]' : '▾ Minimal View [H]'}
-            </button>
-          </div>
-        )}
+        <div className="pointer-events-auto flex items-center gap-2 mb-1">
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={(e) => {
+              e.currentTarget.blur();
+              setHudCollapsed((prev) => !prev);
+            }}
+            className="px-2.5 py-1 rounded-lg bg-neutral-950/80 border border-white/12 text-[10px] font-mono-tabular text-neutral-400 hover:text-white cursor-pointer whitespace-nowrap"
+          >
+            {hudCollapsed ? '▴ Show HUD' : '▾ Minimal View'}
+          </button>
+        </div>
       </div>
 
       {renderSharedModals()}

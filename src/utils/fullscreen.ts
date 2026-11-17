@@ -142,3 +142,4 @@ export async function toggleFullscreen(): Promise<boolean> {
   }
   return await requestFullscreen();
 }
+
