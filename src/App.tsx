@@ -28,6 +28,7 @@ import {
   VehicleCustomization,
 } from './game/types';
 import { getVehicleById, VEHICLES_CATALOG } from './game/vehiclesData';
+import { isMobileOrTouch, requestFullscreen } from './utils/fullscreen';
 
 const SETTINGS_STORAGE_KEY = 'touge_game_settings_v2';
 
@@ -362,6 +363,9 @@ export default function App() {
 
   const handleStartGame = useCallback(() => {
     if (gameState === 'playing') return;
+    if (isMobileOrTouch() || gameSettings.fullscreen) {
+      requestFullscreen().catch(() => {});
+    }
     soundEngine.warmup();
     soundEngine.playEngineStartup(
       selectedVehicle.soundType,
@@ -374,6 +378,7 @@ export default function App() {
     setGameState('playing');
   }, [
     gameState,
+    gameSettings.fullscreen,
     selectedVehicle.soundType,
     selectedVehicle.engineAudioProfile,
     activeCustomization,
@@ -448,7 +453,7 @@ export default function App() {
   }, []);
 
   return (
-    <main className="relative w-screen h-screen overflow-hidden bg-stone-950 select-none">
+    <main className="fixed inset-0 w-full w-[100dvw] h-full h-[100dvh] overflow-hidden bg-stone-950 select-none">
       {/* Isolated WebGL Canvas Sibling */}
       <DriftCanvas
         mapId={mapId}

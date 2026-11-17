@@ -67,6 +67,16 @@ import {
 } from '../game/types';
 import { getVehicleById, VEHICLES_CATALOG } from '../game/vehiclesData';
 import { GarageDynoLiveState } from './DriftCanvas';
+import {
+  canRequestFullscreen,
+  exitFullscreen,
+  isFullscreen,
+  isIOSSafari,
+  isMobileOrTouch,
+  isStandalonePWA,
+  requestFullscreen,
+  toggleFullscreen,
+} from '../utils/fullscreen';
 
 export interface TelemetryHandles {
   updateTelemetry: (state: CarState) => void;
@@ -264,13 +274,42 @@ export function GameHUD({
     }
   }, [gameState]);
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
-    typeof window !== 'undefined' ? window.innerWidth < 900 : false
+    typeof window !== 'undefined' ? window.innerWidth < 1024 || isMobileOrTouch() : false
   );
   const [isPortraitMobile, setIsPortraitMobile] = useState(() =>
     typeof window !== 'undefined'
-      ? window.innerWidth < window.innerHeight && window.innerWidth < 680
+      ? window.innerWidth < window.innerHeight && (window.innerWidth < 800 || isMobileOrTouch())
       : false
   );
+  const [fsActive, setFsActive] = useState(() => isFullscreen());
+  const [iosSafariTip, setIosSafariTip] = useState(false);
+
+  useEffect(() => {
+    const updateFs = () => {
+      const active = isFullscreen();
+      setFsActive(active);
+      if (active !== gameSettings.fullscreen) {
+        onUpdateSettings?.({ fullscreen: active });
+      }
+    };
+    document.addEventListener('fullscreenchange', updateFs);
+    document.addEventListener('webkitfullscreenchange', updateFs);
+    return () => {
+      document.removeEventListener('fullscreenchange', updateFs);
+      document.removeEventListener('webkitfullscreenchange', updateFs);
+    };
+  }, [gameSettings.fullscreen, onUpdateSettings]);
+
+  const handleToggleFullscreen = React.useCallback(async () => {
+    if (!canRequestFullscreen() && isIOSSafari() && !isStandalonePWA()) {
+      setIosSafariTip(true);
+      setTimeout(() => setIosSafariTip(false), 6000);
+      return;
+    }
+    const next = await toggleFullscreen();
+    setFsActive(next);
+    onUpdateSettings?.({ fullscreen: next });
+  }, [onUpdateSettings]);
   const [wheelVisualDeg, setWheelVisualDeg] = useState(0);
   const wheelDragOriginRef = useRef<{ cx: number; cy: number } | null>(null);
   const wheelPointerIdRef = useRef<number | null>(null);
@@ -592,8 +631,10 @@ export function GameHUD({
   // Track responsive viewport width and portrait/landscape orientation for auto PC vs. Mobile controls
   useEffect(() => {
     const onResize = () => {
-      setIsMobileViewport(window.innerWidth < 900);
-      setIsPortraitMobile(window.innerWidth < window.innerHeight && window.innerWidth < 680);
+      setIsMobileViewport(window.innerWidth < 1024 || isMobileOrTouch());
+      setIsPortraitMobile(
+        window.innerWidth < window.innerHeight && (window.innerWidth < 800 || isMobileOrTouch())
+      );
     };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
@@ -1297,6 +1338,9 @@ export function GameHUD({
               onClick={() => {
                 soundEngine.playUiChime(600);
                 setIsTestDrive(true);
+                if (isMobileOrTouch() || gameSettings.fullscreen) {
+                  requestFullscreen().catch(() => {});
+                }
                 onStartGame();
               }}
               className="px-3 py-1.5 rounded-xl font-display font-bold text-xs uppercase tracking-wider bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/60 text-emerald-300 cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-60 disabled:cursor-wait"
@@ -1312,6 +1356,9 @@ export function GameHUD({
               onClick={() => {
                 soundEngine.playUiChime(660);
                 setIsTestDrive(false);
+                if (isMobileOrTouch() || gameSettings.fullscreen) {
+                  requestFullscreen().catch(() => {});
+                }
                 onStartGame();
               }}
               className={`px-3.5 py-1.5 rounded-xl font-display font-bold text-xs uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0 shadow-lg disabled:opacity-60 disabled:cursor-wait ${
@@ -1321,6 +1368,19 @@ export function GameHUD({
               }`}
             >
               {isStartingGame ? '🏎️ Starting...' : `Drive ${mapDef.name} →`}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                soundEngine.playUiChime(520);
+                handleToggleFullscreen();
+              }}
+              className="px-2.5 py-1.5 rounded-xl text-xs font-mono-tabular font-semibold border border-stone-700 bg-stone-900 text-stone-200 hover:bg-stone-800 cursor-pointer whitespace-nowrap flex items-center gap-1"
+              title={fsActive ? 'Exit Fullscreen' : 'Fullscreen Mode (Hide Browser Header)'}
+            >
+              <span>{fsActive ? '🗗' : '⛶'}</span>
+              <span className="hidden sm:inline">{fsActive ? 'Window' : 'Fullscreen'}</span>
             </button>
           </div>
         </div>
@@ -3535,6 +3595,27 @@ export function GameHUD({
   // ---------------------------------------------------------------------------
   const renderSharedModals = () => (
     <>
+      {/* iOS Safari Fullscreen / Add to Home Screen Instructions */}
+      {iosSafariTip && (
+        <aside
+          aria-label="iOS Safari Fullscreen Instructions"
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-50 pointer-events-auto max-w-md w-[92vw] px-4 py-2.5 rounded-xl bg-neutral-950/95 border border-amber-500/70 text-amber-200 text-xs font-mono-tabular shadow-2xl flex items-center gap-2.5 backdrop-blur-md"
+        >
+          <span className="text-base shrink-0">📲</span>
+          <span className="leading-snug">
+            To hide the browser header on iPhone: Tap <strong>Share</strong> ⎋ → <strong>&apos;Add to Home Screen&apos;</strong> to launch in borderless full screen!
+          </span>
+          <button
+            type="button"
+            onClick={() => setIosSafariTip(false)}
+            className="ml-auto text-neutral-400 hover:text-white p-1 text-sm shrink-0 cursor-pointer"
+            aria-label="Dismiss banner"
+          >
+            ✕
+          </button>
+        </aside>
+      )}
+
       {/* OPEN-WORLD INTERACTIVE MAP, POIS & LIVE MULTIPLAYER RADAR MODAL */}
       {showWorldMapModal && (
         <div
@@ -4840,23 +4921,16 @@ export function GameHUD({
                           <button
                             type="button"
                             onClick={() => {
-                              const nextFs = !gameSettings.fullscreen;
-                              onUpdateSettings?.({ fullscreen: nextFs });
-                              if (typeof document !== 'undefined') {
-                                if (nextFs && document.documentElement.requestFullscreen) {
-                                  document.documentElement.requestFullscreen().catch(() => {});
-                                } else if (!nextFs && document.fullscreenElement && document.exitFullscreen) {
-                                  document.exitFullscreen().catch(() => {});
-                                }
-                              }
+                              soundEngine.playUiChime(520);
+                              handleToggleFullscreen();
                             }}
                             className={`px-3 py-1 rounded-lg text-xs font-mono-tabular font-bold uppercase cursor-pointer ${
-                              gameSettings.fullscreen
+                              fsActive
                                 ? 'bg-orange-500 text-neutral-950'
                                 : 'bg-neutral-800 text-neutral-200'
                             }`}
                           >
-                            {gameSettings.fullscreen ? 'FULLSCREEN' : 'WINDOWED'}
+                            {fsActive ? 'FULLSCREEN' : 'WINDOWED'}
                           </button>
                         </div>
 
@@ -6231,6 +6305,9 @@ export function GameHUD({
               onClick={() => {
                 soundEngine.playUiChime(640);
                 setIsTestDrive(false);
+                if (isMobileOrTouch() || gameSettings.fullscreen) {
+                  requestFullscreen().catch(() => {});
+                }
                 onStartGame();
               }}
               className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
@@ -6299,6 +6376,18 @@ export function GameHUD({
               className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
             >
               Profile
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                soundEngine.playUiChime(520);
+                handleToggleFullscreen();
+              }}
+              className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-amber-400 font-display font-bold text-xs uppercase tracking-wider cursor-pointer flex items-center gap-1.5"
+              title={fsActive ? 'Exit Fullscreen' : 'Fullscreen Mode (Hide Browser Header)'}
+            >
+              <span>{fsActive ? '🗗' : '⛶'}</span>
+              <span>{fsActive ? 'Window' : 'Fullscreen'}</span>
             </button>
           </nav>
         </div>
@@ -6509,6 +6598,9 @@ export function GameHUD({
                 e.currentTarget.blur();
                 soundEngine.playUiChime(640);
                 setIsTestDrive(false);
+                if (isMobileOrTouch() || gameSettings.fullscreen) {
+                  requestFullscreen().catch(() => {});
+                }
                 onStartGame();
               }}
               className="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-display font-bold text-base tracking-wider uppercase cursor-pointer disabled:opacity-75 disabled:cursor-wait"
@@ -6579,9 +6671,20 @@ export function GameHUD({
 
       {/* MOBILE PORTRAIT ORIENTATION BANNER (Prompts Landscape Mode on narrow vertical phones) */}
       {isPortraitMobile && !photoModeState.active && !replayState.active && (
-        <div className="pointer-events-auto mx-auto mb-2 px-3.5 py-1.5 rounded-xl bg-neutral-950/95 border border-orange-500/50 text-[11px] font-mono-tabular text-neutral-200 flex items-center gap-2 shadow-xl">
-          <span className="text-orange-400 font-bold">↻ LANDSCAPE RECOMMENDED</span>
-          <span className="text-neutral-400">Rotate device horizontally for two-thumb racing controls</span>
+        <div className="pointer-events-auto mx-auto mb-2 px-3.5 py-1.5 rounded-xl bg-neutral-950/95 border border-orange-500/50 text-[11px] font-mono-tabular text-neutral-200 flex flex-wrap items-center justify-between gap-2 shadow-xl">
+          <div className="flex items-center gap-2">
+            <span className="text-orange-400 font-bold">↻ LANDSCAPE RECOMMENDED</span>
+            <span className="text-neutral-400">Rotate device horizontally for racing controls</span>
+          </div>
+          {!fsActive && (
+            <button
+              type="button"
+              onClick={() => handleToggleFullscreen()}
+              className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold uppercase text-[10px] cursor-pointer"
+            >
+              ⛶ Go Fullscreen
+            </button>
+          )}
         </div>
       )}
 
@@ -6854,6 +6957,21 @@ export function GameHUD({
                 className="w-7 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-neutral-200 flex items-center justify-center text-xs cursor-pointer shrink-0"
               >
                 {isMuted ? '🔇' : '🔊'}
+              </button>
+
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-label={fsActive ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+                title={fsActive ? 'Exit Fullscreen' : 'Fullscreen Mode (Hide Browser Header)'}
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  soundEngine.playUiChime(520);
+                  handleToggleFullscreen();
+                }}
+                className="w-7 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-neutral-200 flex items-center justify-center text-xs cursor-pointer shrink-0"
+              >
+                {fsActive ? '🗗' : '⛶'}
               </button>
             </div>
 

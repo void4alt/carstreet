@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <rect width="512" height="512" rx="112" fill="#0c0a09"/>
+  <defs>
+    <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#ea580c"/>
+    </linearGradient>
+    <linearGradient id="sakura" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f472b6"/>
+      <stop offset="100%" stop-color="#db2777"/>
+    </linearGradient>
+  </defs>
+  <!-- Speed lines -->
+  <path d="M 60 210 L 170 210" stroke="#f59e0b" stroke-width="8" stroke-linecap="round" opacity="0.4"/>
+  <path d="M 40 256 L 190 256" stroke="#f59e0b" stroke-width="12" stroke-linecap="round" opacity="0.7"/>
+  <path d="M 70 302 L 160 302" stroke="#f59e0b" stroke-width="8" stroke-linecap="round" opacity="0.4"/>
+  <!-- Stylized Sports Car Silhouette -->
+  <path d="M 140 330 C 145 300 170 280 200 280 L 250 280 C 275 240 315 210 375 210 L 415 210 C 445 210 465 235 460 265 L 450 330 Z" fill="url(#glow)"/>
+  <!-- Cockpit Window -->
+  <path d="M 270 270 C 290 245 320 226 365 226 L 400 226 C 418 226 428 238 424 254 L 420 270 Z" fill="#0c0a09"/>
+  <!-- Wheel Arches & Wheels -->
+  <circle cx="210" cy="335" r="42" fill="#18181b" stroke="#f59e0b" stroke-width="6"/>
+  <circle cx="210" cy="335" r="20" fill="#f59e0b"/>
+  <circle cx="410" cy="335" r="42" fill="#18181b" stroke="#f59e0b" stroke-width="6"/>
+  <circle cx="410" cy="335" r="20" fill="#f59e0b"/>
+  <!-- Underglow / Ground Line -->
+  <rect x="140" y="375" width="310" height="6" rx="3" fill="url(#glow)" opacity="0.8"/>
+  <!-- Sakura Blossom Petals -->
+  <circle cx="110" cy="140" r="14" fill="url(#sakura)" opacity="0.85"/>
+  <circle cx="430" cy="130" r="12" fill="url(#sakura)" opacity="0.8"/>
+  <circle cx="460" cy="170" r="9" fill="url(#sakura)" opacity="0.6"/>
+</svg>
