@@ -147,6 +147,15 @@ class MultiplayerClientManager {
   }
 
   public getRoom(): MultiplayerRoomInfo | null {
+    if (this.activeRoom) {
+      if (
+        this.activeRoom.raceStatus === 'countdown' &&
+        this.activeRoom.raceStartMs &&
+        Date.now() >= this.activeRoom.raceStartMs
+      ) {
+        this.activeRoom.raceStatus = 'active';
+      }
+    }
     return this.activeRoom;
   }
 
@@ -464,7 +473,15 @@ class MultiplayerClientManager {
     this.activeRoom = localJoin.room;
     this.connectionStatus = 'connected';
     this.lastError = null;
-    this.spawnRoomDrifters(this.activeRoom);
+    if (this.activeRoom.isPrivate || this.activeRoom.hasPassword) {
+      this.companionDrifters = [];
+      fallbackRoomStore.leaveRoom(this.activeRoom.id, 'bot_keisuke');
+      fallbackRoomStore.leaveRoom(this.activeRoom.id, 'bot_ryosuke');
+      fallbackRoomStore.leaveRoom(this.activeRoom.id, 'bot_nobuhiko');
+      fallbackRoomStore.leaveRoom(this.activeRoom.id, 'bot_hideo');
+    } else {
+      this.spawnRoomDrifters(this.activeRoom);
+    }
     this.initBroadcastChannel(this.activeRoom.id, playerPayload);
     const all = fallbackRoomStore.getRoomPlayers(this.activeRoom.id);
     this.ingestPlayerList(all);
@@ -483,7 +500,10 @@ class MultiplayerClientManager {
         const msg = ev.data;
         if (!msg || typeof msg !== 'object') return;
         if (msg.type === 'player_update' && msg.player && msg.player.playerId !== this.playerId) {
-          fallbackRoomStore.updatePlayerState(roomId, msg.player);
+          const updateRes = fallbackRoomStore.updatePlayerState(roomId, msg.player);
+          if (updateRes.room) {
+            this.activeRoom = updateRes.room;
+          }
           const all = fallbackRoomStore.getRoomPlayers(roomId);
           this.ingestPlayerList(all);
           this.notify();
@@ -517,6 +537,11 @@ class MultiplayerClientManager {
   }
 
   private spawnRoomDrifters(room: MultiplayerRoomInfo) {
+    // Never spawn companion AI drifters in private or password-protected rooms
+    if (room.isPrivate || room.hasPassword) {
+      this.companionDrifters = [];
+      return;
+    }
     if (room.mapId === 'mountain') {
       this.companionDrifters = [
         {
@@ -746,7 +771,10 @@ class MultiplayerClientManager {
       if (this.companionDrifters.length > 0) {
         this.updateCompanionDrifters(0.065);
       }
-      fallbackRoomStore.updatePlayerState(this.activeRoom.id, payload);
+      const updateRes = fallbackRoomStore.updatePlayerState(this.activeRoom.id, payload);
+      if (updateRes.room) {
+        this.activeRoom = updateRes.room;
+      }
       const all = fallbackRoomStore.getRoomPlayers(this.activeRoom.id);
       this.ingestPlayerList(all);
       this.broadcastMessage({ type: 'player_update', roomId: this.activeRoom.id, player: payload });

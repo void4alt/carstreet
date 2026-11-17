@@ -363,6 +363,8 @@ export function GameHUD({
   const [mpNewRoomPassword, setMpNewRoomPassword] = useState('');
   const [mpNewRoomMaxPlayers, setMpNewRoomMaxPlayers] = useState(8);
   const [mpNewRoomCollisions, setMpNewRoomCollisions] = useState(false);
+  // On mobile devices, multiplayer standings default to collapsed to prevent driving view distraction
+  const [mpLeaderboardExpanded, setMpLeaderboardExpanded] = useState<boolean>(() => !isMobileViewport);
 
   // Persistent Driver Profile stats
   const [driverProfile, setDriverProfile] = useState(() => {
@@ -609,17 +611,26 @@ export function GameHUD({
       const room = multiplayerClient.getRoom();
       const cdStartMs = room?.raceCountdownStartMs ?? 0;
       const raceStartMs = room?.raceStartMs ?? 0;
+      const now = Date.now();
       if (room?.raceStatus === 'countdown' && cdStartMs > 0) {
-        const elapsed = Date.now() - cdStartMs;
-        const remSec = Math.ceil((3500 - elapsed) / 1000);
-        if (remSec >= 3) setRaceCountdownLabel('3');
-        else if (remSec === 2) setRaceCountdownLabel('2');
-        else if (remSec === 1) setRaceCountdownLabel('1');
-        else setRaceCountdownLabel('GO!');
+        const elapsed = now - cdStartMs;
+        if (elapsed >= 4500) {
+          // Hard cap: 3.5s countdown + 1.0s GO! = 4.5s max, clear banner
+          setRaceCountdownLabel(null);
+        } else if (elapsed >= 3500) {
+          setRaceCountdownLabel('GO!');
+        } else {
+          const remSec = Math.ceil((3500 - elapsed) / 1000);
+          if (remSec >= 3) setRaceCountdownLabel('3');
+          else if (remSec === 2) setRaceCountdownLabel('2');
+          else if (remSec === 1) setRaceCountdownLabel('1');
+          else setRaceCountdownLabel('GO!');
+        }
       } else if (
         room?.raceStatus === 'active' &&
         raceStartMs > 0 &&
-        Date.now() - raceStartMs < 1400
+        now >= raceStartMs &&
+        now - raceStartMs < 1200
       ) {
         setRaceCountdownLabel('GO!');
       } else {
@@ -7154,7 +7165,7 @@ export function GameHUD({
 
         {/* TOP-CENTER: Clean, Restrained Automotive Drift Score Readout */}
         {!hudCollapsed && (
-          <div className="flex flex-col items-center gap-1 pointer-events-none shrink-0 scale-90 sm:scale-100">
+          <div className="flex flex-col items-center gap-1 pointer-events-none shrink-0 scale-75 sm:scale-90 lg:scale-100">
             <div
               ref={driftBannerRef}
               className="flex items-center gap-2 lg:gap-3 bg-neutral-950/88 border border-white/15 rounded-xl px-2.5 lg:px-3.5 py-1 lg:py-1.5 transition-opacity font-mono-tabular tabular-nums"
@@ -7506,141 +7517,174 @@ export function GameHUD({
       >
         {/* Live Multiplayer Room Leaderboard, Race Controls & Tandem Proximity Sync */}
         {mpConnectedRoom && !hudCollapsed && !photoModeState.active && !replayState.active && (
-          <div className="pointer-events-auto bg-neutral-950/92 border border-white/15 rounded-xl p-2.5 sm:p-3 w-56 sm:w-68 flex flex-col gap-2 font-mono-tabular tabular-nums">
-            <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
+          !mpLeaderboardExpanded ? (
+            /* Minimal non-distracting pill for mobile driving */
+            <div className="pointer-events-auto bg-neutral-950/85 backdrop-blur-sm border border-white/15 rounded-lg px-2.5 py-1.5 flex items-center gap-2 text-[10px] font-mono-tabular shadow-lg">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
               <div className="flex flex-col">
-                <span className="text-[10px] uppercase text-neutral-200 font-bold truncate max-w-[165px]">
-                  ● {mpConnectedRoom.name}
+                <span className="text-[10px] text-neutral-200 font-bold truncate max-w-[110px]">
+                  {mpConnectedRoom.name}
                 </span>
-                <span className="text-[9px] uppercase text-neutral-400">
-                  {mpConnectedRoom.mode.replace('_', ' ')} ·{' '}
-                  {mpConnectedRoom.raceStatus === 'active'
-                    ? `RACING (${mpConnectedRoom.totalLaps} LAPS)`
-                    : mpConnectedRoom.raceStatus === 'countdown'
-                      ? 'COUNTDOWN...'
-                      : mpConnectedRoom.raceStatus === 'finished'
-                        ? 'RACE FINISHED'
-                        : 'FREE ROAM / LOBBY'}
+                <span className="text-[8px] text-neutral-400">
+                  {mpConnectedRoom.raceStatus === 'active' ? '🏁 RACING' : 'LOBBY'} · {1 + mpRemotePlayers.length}P
                 </span>
               </div>
-              <span className="text-[10px] text-orange-400 font-bold">
-                #{mpConnectedRoom.inviteCode}
-              </span>
+              <button
+                type="button"
+                onClick={() => setMpLeaderboardExpanded(true)}
+                className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-orange-400 font-bold text-[9px] uppercase tracking-wide cursor-pointer transition-colors"
+                title="Expand Leaderboard & Race Controls"
+              >
+                Stats ▾
+              </button>
             </div>
-
-            {/* Standings List */}
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center justify-between text-xs text-neutral-100">
-                <span className="truncate">
-                  ★ {mpPlayerName} <span className="text-[10px] text-neutral-400">({selectedVehicle.chassisCode})</span>
-                </span>
-                <span className="text-orange-400 font-bold">
-                  {Math.round(
-                    (latestCarRef.current?.totalDriftScore ?? 0) +
-                      (latestCarRef.current?.currentDriftPoints ?? 0)
-                  ).toLocaleString()}{' '}
-                  PTS
-                </span>
-              </div>
-              {mpRemotePlayers.map((rp) => {
-                const vSpec = getVehicleById(rp.vehicleId);
-                return (
-                  <div
-                    key={rp.playerId}
-                    className="flex items-center justify-between text-xs text-neutral-300"
-                  >
-                    <span className="truncate flex items-center gap-1.5">
-                      <span
-                        className="w-2 h-2 rounded-full shrink-0"
-                        style={{ backgroundColor: rp.paintColor || '#f97316' }}
-                      />
-                      <span>{rp.playerName}</span>
-                      <span className="text-[10px] text-neutral-500">({vSpec.chassisCode})</span>
-                    </span>
-                    <span className="text-neutral-200 font-semibold">
-                      {Math.round(rp.driftScore + rp.currentDriftPoints).toLocaleString()} PTS
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Live Tandem Drift Proximity & Angle Sync Telemetry Box */}
-            {tandemTelemetry && tandemTelemetry.partnerName && (
-              <div className="bg-neutral-900/95 border border-orange-500/40 rounded-lg p-2 flex flex-col gap-1">
-                <div className="flex items-center justify-between text-[10px]">
-                  <span className="text-orange-400 font-extrabold uppercase">
-                    ⚡ {tandemTelemetry.role} TANDEM · {tandemTelemetry.partnerName}
+          ) : (
+            <div className="pointer-events-auto bg-neutral-950/92 border border-white/15 rounded-xl p-2.5 sm:p-3 w-56 sm:w-68 max-h-[70vh] overflow-y-auto flex flex-col gap-2 font-mono-tabular tabular-nums shadow-2xl">
+              <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
+                <div className="flex flex-col">
+                  <span className="text-[10px] uppercase text-neutral-200 font-bold truncate max-w-[130px]">
+                    ● {mpConnectedRoom.name}
                   </span>
-                  <span className="px-1.5 py-0.2 rounded bg-orange-500 text-neutral-950 font-extrabold text-[9px]">
-                    {tandemTelemetry.tandemMultiplierBonus.toFixed(2)}x
+                  <span className="text-[9px] uppercase text-neutral-400">
+                    {mpConnectedRoom.mode.replace('_', ' ')} ·{' '}
+                    {mpConnectedRoom.raceStatus === 'active'
+                      ? `RACING (${mpConnectedRoom.totalLaps} LAPS)`
+                      : mpConnectedRoom.raceStatus === 'countdown'
+                        ? 'COUNTDOWN...'
+                        : mpConnectedRoom.raceStatus === 'finished'
+                          ? 'RACE FINISHED'
+                          : 'FREE ROAM / LOBBY'}
                   </span>
                 </div>
-                <div className="grid grid-cols-3 gap-1 text-[10px]">
-                  <div>
-                    <div className="text-[8px] text-neutral-400">PROXIMITY</div>
-                    <div className="font-bold text-neutral-100">{tandemTelemetry.distanceMeters}m</div>
-                  </div>
-                  <div>
-                    <div className="text-[8px] text-neutral-400">ANGLE SYNC</div>
-                    <div className="font-bold text-orange-300">{tandemTelemetry.angleSyncPct}%</div>
-                  </div>
-                  <div>
-                    <div className="text-[8px] text-neutral-400">SPEED SYNC</div>
-                    <div className="font-bold text-emerald-300">{tandemTelemetry.speedSyncPct}%</div>
-                  </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-orange-400 font-bold">
+                    #{mpConnectedRoom.inviteCode}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setMpLeaderboardExpanded(false)}
+                    className="p-1 rounded bg-white/10 hover:bg-white/20 text-neutral-300 hover:text-white text-[10px] leading-none cursor-pointer"
+                    title="Minimize Standings"
+                  >
+                    ▴
+                  </button>
                 </div>
               </div>
-            )}
 
-            {/* Synchronized Multiplayer Race Start / Reset + On-the-Fly Car Switcher */}
-            <div className="flex flex-col gap-1.5 pt-1 border-t border-white/10">
-              <div className="flex items-center gap-1.5">
-                {mpConnectedRoom.raceStatus === 'lobby' || mpConnectedRoom.raceStatus === 'finished' ? (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      soundEngine.playUiChime(620);
-                      await multiplayerClient.startRace({ totalLaps: mpConnectedRoom.totalLaps || 2 });
-                    }}
-                    className="flex-1 py-1.5 px-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-neutral-950 font-display font-bold text-[10px] uppercase tracking-wider cursor-pointer"
-                  >
-                    🏁 Start Race (3-2-1-GO!)
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      soundEngine.playUiChime(460);
-                      await multiplayerClient.resetRace();
-                    }}
-                    className="flex-1 py-1.5 px-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-mono-tabular font-bold text-[10px] uppercase cursor-pointer"
-                  >
-                    ↺ Reset to Free Roam
-                  </button>
-                )}
+              {/* Standings List */}
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between text-xs text-neutral-100">
+                  <span className="truncate">
+                    ★ {mpPlayerName} <span className="text-[10px] text-neutral-400">({selectedVehicle.chassisCode})</span>
+                  </span>
+                  <span className="text-orange-400 font-bold">
+                    {Math.round(
+                      (latestCarRef.current?.totalDriftScore ?? 0) +
+                        (latestCarRef.current?.currentDriftPoints ?? 0)
+                    ).toLocaleString()}{' '}
+                    PTS
+                  </span>
+                </div>
+                {mpRemotePlayers.map((rp) => {
+                  const vSpec = getVehicleById(rp.vehicleId);
+                  return (
+                    <div
+                      key={rp.playerId}
+                      className="flex items-center justify-between text-xs text-neutral-300"
+                    >
+                      <span className="truncate flex items-center gap-1.5">
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ backgroundColor: rp.paintColor || '#f97316' }}
+                        />
+                        <span>{rp.playerName}</span>
+                        <span className="text-[10px] text-neutral-500">({vSpec.chassisCode})</span>
+                      </span>
+                      <span className="text-neutral-200 font-semibold">
+                        {Math.round(rp.driftScore + rp.currentDriftPoints).toLocaleString()} PTS
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
 
-              <div className="flex items-center justify-between gap-1.5">
-                <span className="text-[9px] text-neutral-400 uppercase shrink-0">SWITCH CAR:</span>
-                <select
-                  aria-label="Quick Switch Multiplayer Vehicle"
-                  value={selectedVehicle.id}
-                  onChange={(e) => {
-                    soundEngine.playUiChime(530);
-                    onSelectVehicle(e.target.value);
-                  }}
-                  className="flex-1 bg-neutral-900 border border-white/15 rounded px-1.5 py-0.5 text-[10px] font-mono-tabular text-neutral-100 cursor-pointer truncate"
-                >
-                  {VEHICLES_CATALOG.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.manufacturer} {v.name} ({v.chassisCode})
-                    </option>
-                  ))}
-                </select>
+              {/* Live Tandem Drift Proximity & Angle Sync Telemetry Box */}
+              {tandemTelemetry && tandemTelemetry.partnerName && (
+                <div className="bg-neutral-900/95 border border-orange-500/40 rounded-lg p-2 flex flex-col gap-1">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="text-orange-400 font-extrabold uppercase">
+                      ⚡ {tandemTelemetry.role} TANDEM · {tandemTelemetry.partnerName}
+                    </span>
+                    <span className="px-1.5 py-0.2 rounded bg-orange-500 text-neutral-950 font-extrabold text-[9px]">
+                      {tandemTelemetry.tandemMultiplierBonus.toFixed(2)}x
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 text-[10px]">
+                    <div>
+                      <div className="text-[8px] text-neutral-400">PROXIMITY</div>
+                      <div className="font-bold text-neutral-100">{tandemTelemetry.distanceMeters}m</div>
+                    </div>
+                    <div>
+                      <div className="text-[8px] text-neutral-400">ANGLE SYNC</div>
+                      <div className="font-bold text-orange-300">{tandemTelemetry.angleSyncPct}%</div>
+                    </div>
+                    <div>
+                      <div className="text-[8px] text-neutral-400">SPEED SYNC</div>
+                      <div className="font-bold text-emerald-300">{tandemTelemetry.speedSyncPct}%</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Synchronized Multiplayer Race Start / Reset + On-the-Fly Car Switcher */}
+              <div className="flex flex-col gap-1.5 pt-1 border-t border-white/10">
+                <div className="flex items-center gap-1.5">
+                  {mpConnectedRoom.raceStatus === 'lobby' || mpConnectedRoom.raceStatus === 'finished' ? (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        soundEngine.playUiChime(620);
+                        await multiplayerClient.startRace({ totalLaps: mpConnectedRoom.totalLaps || 2 });
+                      }}
+                      className="flex-1 py-1.5 px-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-neutral-950 font-display font-bold text-[10px] uppercase tracking-wider cursor-pointer"
+                    >
+                      🏁 Start Race (3-2-1-GO!)
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        soundEngine.playUiChime(460);
+                        await multiplayerClient.resetRace();
+                      }}
+                      className="flex-1 py-1.5 px-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-mono-tabular font-bold text-[10px] uppercase cursor-pointer"
+                    >
+                      ↺ Reset to Free Roam
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between gap-1.5">
+                  <span className="text-[9px] text-neutral-400 uppercase shrink-0">SWITCH CAR:</span>
+                  <select
+                    aria-label="Quick Switch Multiplayer Vehicle"
+                    value={selectedVehicle.id}
+                    onChange={(e) => {
+                      soundEngine.playUiChime(530);
+                      onSelectVehicle(e.target.value);
+                    }}
+                    className="flex-1 bg-neutral-900 border border-white/15 rounded px-1.5 py-0.5 text-[10px] font-mono-tabular text-neutral-100 cursor-pointer truncate"
+                  >
+                    {VEHICLES_CATALOG.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.manufacturer} {v.name} ({v.chassisCode})
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
             </div>
-          </div>
+          )
         )}
 
         {/* Optional Toggleable Vehicle Telemetry Panel */}

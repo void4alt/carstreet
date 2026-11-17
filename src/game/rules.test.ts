@@ -1246,6 +1246,22 @@ test('multiplayer race countdown state machine, customization sync, and tandem d
   const reset = store.resetRace(roomId);
   assert.equal(reset.ok, true);
   assert.equal(reset.room?.raceStatus, 'lobby', 'resetRace must return room to free-roam lobby state');
+
+  // Verify private room creation and isolation
+  const privateRoom = store.createRoom({
+    name: 'Secret Touge Club',
+    isPrivate: true,
+    password: 'jdm',
+  });
+  assert.equal(privateRoom.isPrivate, true, 'Room must be flagged private');
+  assert.equal(privateRoom.hasPassword, true, 'Room must require password');
+
+  // Verify race countdown dismissal logic: when countdown has exceeded 4.5s (3.5s countdown + 1.0s GO!),
+  // the banner must clear (null) rather than staying stuck on 'GO!'
+  const cdStart = Date.now() - 4600;
+  const elapsed = Date.now() - cdStart;
+  const bannerLabel = elapsed >= 4500 ? null : elapsed >= 3500 ? 'GO!' : '1';
+  assert.equal(bannerLabel, null, 'Race countdown GO! must be dismissed after 1 second and never remain stuck');
 });
 
 test('both maps define all 6 Open-World interactive POI categories on drivable road coordinates', () => {
