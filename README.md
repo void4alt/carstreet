@@ -6,14 +6,14 @@
 
 **High-fidelity in-browser 3D Japanese Touge racing and drift simulation built with Three.js, WebGL, React 19, and procedural Web Audio engine.**
 
-[![Play in Browser](https://img.shields.io/badge/🎮%20Play%20Online-GitHub%20Pages-success?style=for-the-badge&logo=googlechrome&logoColor=white)](https://void4alt.github.io/carstreet/)
+[![Play in Browser](https://img.shields.io/badge/🎮%20Play%20Online-Google%20AI%20Studio-success?style=for-the-badge&logo=googlechrome&logoColor=white)](https://touge-sakura-drift-3d.ai.studio)
 [![React 19](https://img.shields.io/badge/React-19.0.1-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
 [![Three.js](https://img.shields.io/badge/Three.js-r187-black?style=for-the-badge&logo=threedotjs&logoColor=white)](https://threejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-8.3-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![TailwindCSS](https://img.shields.io/badge/Tailwind-4.0-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
 
-[**🎮 Play Online Now**](https://void4alt.github.io/carstreet/) · [**Key Features**](#-key-features) · [**Controls**](#-controls--hotkeys) · [**Car Roster**](#-vehicle-showroom--specs) · [**Maps**](#-race-environments) · [**Local Setup**](#-local-development)
+[**🎮 Play Online Now**](https://touge-sakura-drift-3d.ai.studio) · [**Key Features**](#-key-features) · [**Controls**](#-controls--hotkeys) · [**Car Roster**](#-vehicle-showroom--specs) · [**Maps**](#-race-environments) · [**Local Setup**](#-local-development)
 
 </div>
 
@@ -23,9 +23,28 @@
 
 Experience authentic mountain touge drifting directly from your browser—no installations or downloads required!
 
-> 👉 **[Click here to play Touge & Sakura Drift 3D on GitHub Pages](https://void4alt.github.io/carstreet/)**
+> 👉 **[Click here to play Touge & Sakura Drift 3D Online](https://touge-sakura-drift-3d.ai.studio)**
 
 *Optimized for Chrome, Brave, Edge, Firefox, and Safari with 60+ FPS hardware-accelerated WebGL.*
+
+---
+
+## 🎮 In-Game Action & Drift Gameplay
+
+Experience authentic drift dynamics, realistic tire smoke, procedural engine acoustics, dynamic day/night cycles, and live multiplayer tandem battles.
+
+<div align="center">
+  <table>
+    <tr>
+      <td width="50%"><img src="docs/images/gameplay_mountain_drift.png" alt="Akina Sunset Mountain Touge Drift with Smoke" /><br /><b>🏎️ High-Speed Touge Drifting at Sunset</b></td>
+      <td width="50%"><img src="docs/images/gameplay_sakura_paradise.png" alt="Yoshino Sakura Paradise Highway Drifting" /><br /><b>🌸 Full-Throttle Yoshino Cherry Blossom Run</b></td>
+    </tr>
+    <tr>
+      <td width="50%"><img src="docs/images/gameplay_telemetry_drift.png" alt="Real-Time Telemetry HUD with Gear, RPM & Slip Angle" /><br /><b>📊 Telemetry HUD & Transmission Controls</b></td>
+      <td width="50%"><img src="docs/images/gameplay_multiplayer_tandem.png" alt="Real-Time Multiplayer Tandem Racing HUD" /><br /><b>🌐 Live Multiplayer Tandem Drift Battles</b></td>
+    </tr>
+  </table>
+</div>
 
 ---
 
@@ -226,7 +245,7 @@ This repository is configured with an automated GitHub Actions deployment workfl
    - Under **Build and deployment** -> **Source**, select either:
      - **GitHub Actions** (recommended for automated continuous deployment)
      - OR **Deploy from a branch** -> branch: `gh-pages` / folder: `/ (root)`.
-   - Your live game will be instantly playable at: **`https://void4alt.github.io/carstreet/`**!
+   - Your live game will be instantly playable at: **`https://touge-sakura-drift-3d.ai.studio`** (or via your GitHub Pages deployment)!
 
 ---
 
