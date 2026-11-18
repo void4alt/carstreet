@@ -516,9 +516,10 @@ export class MultiplayerRoomStore {
   }
 
   public getRoomByIdOrCode(idOrCode: string): InternalRoomRecord | undefined {
+    if (!idOrCode) return undefined;
     const direct = this.rooms.get(idOrCode);
     if (direct) return direct;
-    const upper = idOrCode.trim().toUpperCase();
+    const upper = String(idOrCode).trim().toUpperCase();
     for (const room of this.rooms.values()) {
       if (room.inviteCode.toUpperCase() === upper) {
         return room;
@@ -572,6 +573,13 @@ export class MultiplayerRoomStore {
     if (room.hasPassword && room.password && room.password !== (password ?? '').trim()) {
       return { ok: false, error: 'Incorrect room password.' };
     }
+    // Remove any stale session from the same playerName so reconnecting never leaves a ghost/bot car behind
+    for (const [pid, existing] of room.players.entries()) {
+      if (pid !== player.playerId && existing.playerName === player.playerName) {
+        room.players.delete(pid);
+      }
+    }
+
     if (!room.players.has(player.playerId) && room.players.size >= room.maxPlayers) {
       return { ok: false, error: 'Room is full.' };
     }
@@ -595,8 +603,12 @@ export class MultiplayerRoomStore {
     playerState: MultiplayerPlayerState
   ): { ok: boolean; players: MultiplayerPlayerState[]; room?: MultiplayerRoomInfo } {
     const room = this.rooms.get(roomId);
-    if (!room) {
+    if (!room || !playerState?.playerId) {
       return { ok: false, players: [] };
+    }
+    // In private rooms, strictly reject updates from any playerId that has not explicitly joined the room
+    if (room.isPrivate && !room.players.has(playerState.playerId)) {
+      return { ok: false, players: Array.from(room.players.values()), room: this.toPublicInfo(room) };
     }
     const now = Date.now();
     const prev = room.players.get(playerState.playerId);

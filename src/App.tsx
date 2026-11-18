@@ -28,7 +28,6 @@ import {
   VehicleCustomization,
 } from './game/types';
 import { getVehicleById, VEHICLES_CATALOG } from './game/vehiclesData';
-import { isMobileOrTouch, requestFullscreen } from './utils/fullscreen';
 
 const SETTINGS_STORAGE_KEY = 'touge_game_settings_v2';
 
@@ -116,26 +115,6 @@ export default function App() {
     currentFrame: 0,
     totalFrames: 0,
   });
-  const [isStartingGame, setIsStartingGame] = useState<boolean>(false);
-
-  // Initialize and warm up sound engine ahead-of-time so CoreAudio device is already active
-  useEffect(() => {
-    soundEngine.warmup();
-    const onUserInteraction = () => {
-      soundEngine.warmup();
-      window.removeEventListener('pointerdown', onUserInteraction);
-      window.removeEventListener('keydown', onUserInteraction);
-      window.removeEventListener('touchstart', onUserInteraction);
-    };
-    window.addEventListener('pointerdown', onUserInteraction, { passive: true });
-    window.addEventListener('keydown', onUserInteraction, { passive: true });
-    window.addEventListener('touchstart', onUserInteraction, { passive: true });
-    return () => {
-      window.removeEventListener('pointerdown', onUserInteraction);
-      window.removeEventListener('keydown', onUserInteraction);
-      window.removeEventListener('touchstart', onUserInteraction);
-    };
-  }, []);
 
   const [gameSettings, setGameSettings] = useState<GameSettings>(() => {
     let saved: Partial<GameSettings> = {};
@@ -361,37 +340,35 @@ export default function App() {
     });
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const warmAudioOnce = () => {
+      soundEngine.warmUp(selectedVehicle.soundType, selectedVehicle.engineAudioProfile);
+    };
+    window.addEventListener('pointerdown', warmAudioOnce, { once: true, passive: true });
+    window.addEventListener('keydown', warmAudioOnce, { once: true, passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', warmAudioOnce);
+      window.removeEventListener('keydown', warmAudioOnce);
+    };
+  }, [selectedVehicle.soundType, selectedVehicle.engineAudioProfile]);
+
   const handleStartGame = useCallback(() => {
-    if (gameState === 'playing') return;
-    if (isMobileOrTouch() || gameSettings.fullscreen) {
-      requestFullscreen().catch(() => {});
-    }
-    soundEngine.warmup();
-    soundEngine.playEngineStartup(
-      selectedVehicle.soundType,
-      selectedVehicle.engineAudioProfile,
-      activeCustomization
-    );
+    soundEngine.playEngineStartup(selectedVehicle.soundType, selectedVehicle.engineAudioProfile);
     setPhotoModeState((prev) => ({ ...prev, active: false }));
     setReplayState((prev) => ({ ...prev, active: false }));
     document.body.dataset.state = 'playing';
     setGameState('playing');
-  }, [
-    gameState,
-    gameSettings.fullscreen,
-    selectedVehicle.soundType,
-    selectedVehicle.engineAudioProfile,
-    activeCustomization,
-  ]);
+  }, [selectedVehicle.soundType, selectedVehicle.engineAudioProfile]);
 
   const handleOpenGarage = useCallback(() => {
     virtualInputRef.current = {};
-    soundEngine.init();
+    soundEngine.warmUp(selectedVehicle.soundType, selectedVehicle.engineAudioProfile);
     setPhotoModeState((prev) => ({ ...prev, active: false }));
     setReplayState((prev) => ({ ...prev, active: false }));
     document.body.dataset.state = 'garage';
     setGameState('garage');
-  }, []);
+  }, [selectedVehicle.soundType, selectedVehicle.engineAudioProfile]);
 
   const handlePauseGame = useCallback(() => {
     virtualInputRef.current = {};
@@ -453,7 +430,7 @@ export default function App() {
   }, []);
 
   return (
-    <main className="fixed inset-0 w-full w-[100dvw] h-full h-[100dvh] overflow-hidden bg-stone-950 select-none">
+    <main className="relative w-screen h-[100dvh] max-h-[100dvh] overflow-hidden bg-stone-950 select-none overscroll-none">
       {/* Isolated WebGL Canvas Sibling */}
       <DriftCanvas
         mapId={mapId}
@@ -488,7 +465,6 @@ export default function App() {
         gameSettings={gameSettings}
         activeViewpointIdx={activeViewpointIdx}
         isMuted={isMuted}
-        isStartingGame={isStartingGame}
         selectedVehicle={selectedVehicle}
         customization={activeCustomization}
         garageCameraView={garageCameraView}

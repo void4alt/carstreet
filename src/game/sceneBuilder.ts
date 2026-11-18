@@ -2054,18 +2054,6 @@ export function buildMapEnvironment(
         }
       }
     });
-    roadTex.dispose();
-    roadBump.dispose();
-    plazaTex.dispose();
-    chevronTex.dispose();
-    signTex.dispose();
-    rockBump.dispose();
-    wallTex.dispose();
-    pineFoliageTex.dispose();
-    sakuraFoliageTex.dispose();
-    barkTex.dispose();
-    rockTex.dispose();
-    terrainDetailTex.dispose();
   }
 
   return {

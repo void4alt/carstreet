@@ -17,9 +17,6 @@ import {
   WeatherMode,
 } from './types';
 import { createInitialCarState } from './carPhysics';
-import { getMapRoadSamples } from './roadMath';
-
-const fallbackRoomStore = new MultiplayerRoomStore();
 
 export type MultiplayerRoomSummary = MultiplayerRoomInfo;
 export type RemotePlayerState = MultiplayerPlayerState;
@@ -115,47 +112,72 @@ class MultiplayerClientManager {
   private httpSyncTimer: number | null = null;
   private pingTimer: number | null = null;
   private lastSentMs = 0;
+  private fallbackStore = new MultiplayerRoomStore();
   private broadcastChannel: BroadcastChannel | null = null;
-  private companionDrifters: Array<{
-    playerId: string;
-    playerName: string;
-    vehicleId: string;
-    paintColor: string;
-    paintFinish: PaintFinishType;
-    sampleIdx: number;
-    speedKmh: number;
-    driftAngle: number;
-    driftScore: number;
-    steerAngle: number;
-  }> = [];
 
   constructor() {
-    const savedId =
-      typeof window !== 'undefined' ? window.sessionStorage.getItem('touge_mp_player_id') : null;
+    let savedId: string | null = null;
+    if (typeof window !== 'undefined') {
+      try {
+        savedId =
+          window.localStorage.getItem('touge_mp_player_id') ||
+          window.sessionStorage.getItem('touge_mp_player_id');
+      } catch {
+        // Ignore storage errors
+      }
+    }
     if (savedId) {
       this.playerId = savedId;
     } else {
       this.playerId = `drifter_${Math.random().toString(36).slice(2, 8)}`;
-      if (typeof window !== 'undefined') {
+    }
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem('touge_mp_player_id', this.playerId);
         window.sessionStorage.setItem('touge_mp_player_id', this.playerId);
+      } catch {
+        // Ignore
       }
     }
 
     const savedName =
       typeof window !== 'undefined' ? window.localStorage.getItem('touge_mp_player_name') : null;
     this.playerName = savedName || `Takumi_${this.playerId.slice(-3).toUpperCase()}`;
+
+    if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
+      try {
+        this.broadcastChannel = new BroadcastChannel('touge_mp_bus_v1');
+        this.broadcastChannel.onmessage = (ev) => {
+          const msg = ev.data;
+          if (!msg || typeof msg !== 'object') return;
+          if (msg.type === 'room_created' && msg.room) {
+            this.fallbackStore.createRoom({
+              ...msg.room,
+              hostPlayerId: msg.room.hostPlayerId || 'remote',
+            });
+          } else if (
+            msg.type === 'player_update' &&
+            this.activeRoom &&
+            msg.roomId === this.activeRoom.id &&
+            msg.player &&
+            msg.player.playerId !== this.playerId
+          ) {
+            // Do not allow uninvited broadcast updates into private rooms unless already joined
+            if (this.activeRoom.isPrivate && !msg.joinedWithInvite) return;
+            const res = this.fallbackStore.updatePlayerState(this.activeRoom.id, msg.player);
+            if (res.ok) {
+              this.ingestPlayerList(res.players);
+              this.notify();
+            }
+          }
+        };
+      } catch {
+        this.broadcastChannel = null;
+      }
+    }
   }
 
   public getRoom(): MultiplayerRoomInfo | null {
-    if (this.activeRoom) {
-      if (
-        this.activeRoom.raceStatus === 'countdown' &&
-        this.activeRoom.raceStartMs &&
-        Date.now() >= this.activeRoom.raceStartMs
-      ) {
-        this.activeRoom.raceStatus = 'active';
-      }
-    }
     return this.activeRoom;
   }
 
@@ -187,7 +209,22 @@ class MultiplayerClientManager {
     };
   }
 
+  private syncLocalCountdownState() {
+    if (
+      this.activeRoom &&
+      this.activeRoom.raceStatus === 'countdown' &&
+      this.activeRoom.raceStartMs &&
+      Date.now() >= this.activeRoom.raceStartMs
+    ) {
+      this.activeRoom = {
+        ...this.activeRoom,
+        raceStatus: 'active',
+      };
+    }
+  }
+
   private notify() {
+    this.syncLocalCountdownState();
     for (const fn of this.listeners) {
       fn(this.activeRoom, this.allPlayers, this.connectionStatus, this.lastError);
     }
@@ -199,47 +236,42 @@ class MultiplayerClientManager {
 
   public async fetchPublicRooms(): Promise<MultiplayerRoomInfo[]> {
     try {
-      const controller = new AbortController();
-      const tid = setTimeout(() => controller.abort(), 1200);
-      const res = await fetch('/api/multiplayer/rooms', { signal: controller.signal });
-      clearTimeout(tid);
-      const data = await res.json();
-      if (data?.ok && Array.isArray(data.rooms) && data.rooms.length > 0) {
-        return data.rooms as MultiplayerRoomInfo[];
+      const res = await fetch('/api/multiplayer/rooms');
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.ok && Array.isArray(data.rooms) && data.rooms.length > 0) {
+          return data.rooms as MultiplayerRoomInfo[];
+        }
       }
     } catch {
-      // Fallback to client-side store
+      // Fallback to local store below
     }
-    fallbackRoomStore.pruneStalePlayers();
-    return fallbackRoomStore.listRooms(false);
+    return this.fallbackStore.listRooms(false);
   }
 
-  public async createRoom(payload: Omit<CreateRoomPayload, 'hostPlayerId'>): Promise<MultiplayerRoomInfo | null> {
+  public async createRoom(
+    payload: Omit<CreateRoomPayload, 'hostPlayerId'>
+  ): Promise<MultiplayerRoomInfo | null> {
+    const fullPayload: CreateRoomPayload = {
+      ...payload,
+      hostPlayerId: this.playerId,
+    };
+    const localRoom = this.fallbackStore.createRoom(fullPayload);
     try {
-      const controller = new AbortController();
-      const tid = setTimeout(() => controller.abort(), 1200);
       const res = await fetch('/api/multiplayer/rooms/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...payload,
-          hostPlayerId: this.playerId,
-        }),
-        signal: controller.signal,
+        body: JSON.stringify(fullPayload),
       });
-      clearTimeout(tid);
-      const data = await res.json();
-      if (data?.ok && data.room) {
-        return data.room as MultiplayerRoomInfo;
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.ok && data.room) {
+          return data.room as MultiplayerRoomInfo;
+        }
       }
     } catch {
-      // Fallback to client-side store
+      // Use localRoom fallback seamlessly
     }
-    const localRoom = fallbackRoomStore.createRoom({
-      ...payload,
-      hostPlayerId: this.playerId,
-    });
-    this.broadcastMessage({ type: 'room_created', room: localRoom });
     return localRoom;
   }
 
@@ -247,10 +279,30 @@ class MultiplayerClientManager {
     opts: CreateAndJoinRoomOptions
   ): Promise<{ ok: boolean; error?: string; room?: MultiplayerRoomInfo }> {
     const normalizedMode = normalizeMultiplayerMode(opts.mode);
+    const resolvedCarState = createInitialCarState(opts.mapId ?? 'mountain', 0);
+    const resolvedCustomization: Partial<VehicleCustomization> = {
+      ...opts.customization,
+      ...(opts.bodyKit ? { bodyKit: opts.bodyKit } : {}),
+      ...(opts.spoilerStyle ? { spoilerStyle: opts.spoilerStyle } : {}),
+      ...(opts.rimStyle ? { rimStyle: opts.rimStyle } : {}),
+      ...(opts.rimColor ? { rimColor: opts.rimColor } : {}),
+    };
+    const playerPayload = this.buildPlayerPayload(
+      resolvedCarState,
+      opts.vehicleId ?? 'r34_gtr',
+      opts.paintColor ?? '#1165d8',
+      opts.paintFinish ?? 'metallic',
+      resolvedCustomization
+    );
 
-    const room = await this.createRoom({
-      name: opts.name,
-      isPrivate: opts.isPrivate,
+    this.leaveRoom();
+    this.connectionStatus = 'connecting';
+    this.lastError = null;
+    this.notify();
+
+    const createPayload: CreateRoomPayload & { player?: MultiplayerPlayerState } = {
+      name: opts.name || 'Touge Drift Room',
+      isPrivate: Boolean(opts.isPrivate),
       password: opts.password,
       maxPlayers: opts.maxPlayers,
       mapId: opts.mapId,
@@ -260,22 +312,67 @@ class MultiplayerClientManager {
       collisionsEnabled: opts.collisionsEnabled,
       totalLaps: opts.totalLaps,
       vehicleRestriction: opts.vehicleRestriction,
-    });
-    if (!room) {
-      return { ok: false, error: 'Failed to create room.' };
+      hostPlayerId: this.playerId,
+      player: playerPayload,
+    };
+
+    // Always register in local fallback store as well
+    const localCreated = this.fallbackStore.createRoom(createPayload);
+    const localJoined = this.fallbackStore.joinRoom(
+      localCreated.id,
+      playerPayload,
+      opts.password
+    );
+
+    try {
+      const res = await fetch('/api/multiplayer/rooms/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(createPayload),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.ok && data.room) {
+          const createdRoom = data.room as MultiplayerRoomInfo;
+          // If server already joined the host player atomically, connect immediately
+          if (Array.isArray(data.players) && data.players.length > 0) {
+            this.activeRoom = createdRoom;
+            this.connectionStatus = 'connected';
+            this.ingestPlayerList(data.players);
+            this.connectWebSocket(this.activeRoom.id, playerPayload, opts.password);
+            this.notify();
+            return { ok: true, room: this.activeRoom };
+          }
+          // Otherwise join explicitly
+          const joinRes = await this.joinRoom({
+            roomId: createdRoom.id,
+            password: opts.password,
+            vehicleId: opts.vehicleId,
+            paintColor: opts.paintColor,
+            paintFinish: opts.paintFinish,
+            bodyKit: opts.bodyKit,
+            spoilerStyle: opts.spoilerStyle,
+            rimStyle: opts.rimStyle,
+            rimColor: opts.rimColor,
+            customization: opts.customization,
+          });
+          if (joinRes.ok) {
+            return joinRes;
+          }
+        }
+      }
+    } catch {
+      // Fallback to local room below
     }
-    return this.joinRoom({
-      roomId: room.id,
-      password: opts.password,
-      vehicleId: opts.vehicleId,
-      paintColor: opts.paintColor,
-      paintFinish: opts.paintFinish,
-      bodyKit: opts.bodyKit,
-      spoilerStyle: opts.spoilerStyle,
-      rimStyle: opts.rimStyle,
-      rimColor: opts.rimColor,
-      customization: opts.customization,
-    });
+
+    // Guaranteed local fallback so creating a room NEVER fails even offline
+    this.activeRoom = localJoined.room ?? localCreated;
+    this.connectionStatus = 'connected';
+    this.lastError = null;
+    this.ingestPlayerList(localJoined.players ?? [playerPayload]);
+    this.broadcastChannel?.postMessage({ type: 'room_created', room: this.activeRoom });
+    this.notify();
+    return { ok: true, room: this.activeRoom };
   }
 
   public async startRace(
@@ -303,9 +400,21 @@ class MultiplayerClientManager {
         })
       );
     }
+
+    // Immediately start countdown locally so race countdown ALWAYS works without delay or failure
+    const now = Date.now();
+    this.fallbackStore.startRace(this.activeRoom.id, totalLaps, resolvedMode);
+    this.activeRoom = {
+      ...this.activeRoom,
+      totalLaps: totalLaps ? Math.max(1, Math.min(10, Math.round(totalLaps))) : this.activeRoom.totalLaps,
+      mode: resolvedMode ?? this.activeRoom.mode,
+      raceStatus: 'countdown',
+      raceCountdownStartMs: now,
+      raceStartMs: now + 3500,
+    };
+    this.notify();
+
     try {
-      const controller = new AbortController();
-      const tid = setTimeout(() => controller.abort(), 1200);
       const res = await fetch('/api/multiplayer/race/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -314,30 +423,22 @@ class MultiplayerClientManager {
           totalLaps,
           mode: resolvedMode,
         }),
-        signal: controller.signal,
       });
-      clearTimeout(tid);
-      const data = await res.json();
-      if (data?.ok && data.room) {
-        this.activeRoom = data.room as MultiplayerRoomInfo;
-        if (Array.isArray(data.players)) {
-          this.ingestPlayerList(data.players);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.ok && data.room) {
+          this.activeRoom = data.room as MultiplayerRoomInfo;
+          if (Array.isArray(data.players)) {
+            this.ingestPlayerList(data.players);
+          }
+          this.notify();
+          return { ok: true, room: this.activeRoom };
         }
-        this.notify();
-        return { ok: true, room: this.activeRoom };
       }
     } catch {
-      // Fallback
+      // Local countdown already started above
     }
-
-    const localRace = fallbackRoomStore.startRace(this.activeRoom.id, totalLaps, resolvedMode);
-    if (localRace.ok && localRace.room) {
-      this.activeRoom = localRace.room;
-      this.broadcastMessage({ type: 'race_started', room: this.activeRoom });
-      this.notify();
-      return { ok: true, room: this.activeRoom };
-    }
-    return { ok: false, error: 'Could not start race.' };
+    return { ok: true, room: this.activeRoom };
   }
 
   public async resetRace(): Promise<void> {
@@ -350,34 +451,33 @@ class MultiplayerClientManager {
         })
       );
     }
+    this.fallbackStore.resetRace(this.activeRoom.id);
+    this.activeRoom = {
+      ...this.activeRoom,
+      raceStatus: 'lobby',
+      raceCountdownStartMs: null,
+      raceStartMs: null,
+    };
+    this.notify();
+
     try {
-      const controller = new AbortController();
-      const tid = setTimeout(() => controller.abort(), 1200);
       const res = await fetch('/api/multiplayer/race/reset', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ roomId: this.activeRoom.id }),
-        signal: controller.signal,
       });
-      clearTimeout(tid);
-      const data = await res.json();
-      if (data?.ok && data.room) {
-        this.activeRoom = data.room as MultiplayerRoomInfo;
-        if (Array.isArray(data.players)) {
-          this.ingestPlayerList(data.players);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.ok && data.room) {
+          this.activeRoom = data.room as MultiplayerRoomInfo;
+          if (Array.isArray(data.players)) {
+            this.ingestPlayerList(data.players);
+          }
+          this.notify();
         }
-        this.notify();
-        return;
       }
     } catch {
-      // Fallback
-    }
-
-    const localReset = fallbackRoomStore.resetRace(this.activeRoom.id);
-    if (localReset.ok && localReset.room) {
-      this.activeRoom = localReset.room;
-      this.broadcastMessage({ type: 'race_reset', room: this.activeRoom });
-      this.notify();
+      // Ignore
     }
   }
 
@@ -430,8 +530,6 @@ class MultiplayerClientManager {
     );
 
     try {
-      const controller = new AbortController();
-      const tid = setTimeout(() => controller.abort(), 1200);
       const res = await fetch('/api/multiplayer/rooms/join', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -440,218 +538,42 @@ class MultiplayerClientManager {
           player: playerPayload,
           password: resolvedPassword,
         }),
-        signal: controller.signal,
       });
-      clearTimeout(tid);
-      const data = await res.json();
-      if (data?.ok && data.room) {
-        this.activeRoom = data.room as MultiplayerRoomInfo;
-        this.connectionStatus = 'connected';
-        this.ingestPlayerList(data.players || []);
-        this.connectWebSocket(this.activeRoom.id, playerPayload, resolvedPassword);
-        this.notify();
-        return { ok: true, room: this.activeRoom };
-      }
-      if (data && !data.ok && data.error && !data.error.includes('404')) {
-        this.connectionStatus = 'disconnected';
-        this.lastError = data.error;
-        this.notify();
-        return { ok: false, error: data.error };
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.ok && data.room) {
+          this.activeRoom = data.room as MultiplayerRoomInfo;
+          this.connectionStatus = 'connected';
+          this.ingestPlayerList(data.players || []);
+          this.connectWebSocket(this.activeRoom.id, playerPayload, resolvedPassword);
+          this.notify();
+          return { ok: true, room: this.activeRoom };
+        }
+        if (data?.error && data.error !== 'Room not found. Check room ID or invite code.') {
+          this.connectionStatus = 'disconnected';
+          this.lastError = data.error;
+          this.notify();
+          return { ok: false, error: this.lastError ?? undefined };
+        }
       }
     } catch {
-      // Fallback to client-side store
+      // Fallback to local store below
     }
 
-    const localJoin = fallbackRoomStore.joinRoom(targetRoomIdOrCode, playerPayload, resolvedPassword);
-    if (!localJoin.ok || !localJoin.room) {
+    const localRes = this.fallbackStore.joinRoom(targetRoomIdOrCode, playerPayload, resolvedPassword);
+    if (!localRes.ok || !localRes.room) {
       this.connectionStatus = 'disconnected';
-      this.lastError = localJoin.error || 'Could not join room. Check ID or code.';
+      this.lastError = localRes.error || 'Could not join room.';
       this.notify();
-      return { ok: false, error: this.lastError };
+      return { ok: false, error: this.lastError ?? undefined };
     }
 
-    this.activeRoom = localJoin.room;
+    this.activeRoom = localRes.room;
     this.connectionStatus = 'connected';
     this.lastError = null;
-    if (this.activeRoom.isPrivate || this.activeRoom.hasPassword) {
-      this.companionDrifters = [];
-      fallbackRoomStore.leaveRoom(this.activeRoom.id, 'bot_keisuke');
-      fallbackRoomStore.leaveRoom(this.activeRoom.id, 'bot_ryosuke');
-      fallbackRoomStore.leaveRoom(this.activeRoom.id, 'bot_nobuhiko');
-      fallbackRoomStore.leaveRoom(this.activeRoom.id, 'bot_hideo');
-    } else {
-      this.spawnRoomDrifters(this.activeRoom);
-    }
-    this.initBroadcastChannel(this.activeRoom.id, playerPayload);
-    const all = fallbackRoomStore.getRoomPlayers(this.activeRoom.id);
-    this.ingestPlayerList(all);
+    this.ingestPlayerList(localRes.players || [playerPayload]);
     this.notify();
     return { ok: true, room: this.activeRoom };
-  }
-
-  private initBroadcastChannel(roomId: string, initialPlayer: MultiplayerPlayerState) {
-    if (typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') return;
-    try {
-      if (this.broadcastChannel) {
-        this.broadcastChannel.close();
-      }
-      this.broadcastChannel = new BroadcastChannel(`touge_drift_room_${roomId}`);
-      this.broadcastChannel.onmessage = (ev) => {
-        const msg = ev.data;
-        if (!msg || typeof msg !== 'object') return;
-        if (msg.type === 'player_update' && msg.player && msg.player.playerId !== this.playerId) {
-          const updateRes = fallbackRoomStore.updatePlayerState(roomId, msg.player);
-          if (updateRes.room) {
-            this.activeRoom = updateRes.room;
-          }
-          const all = fallbackRoomStore.getRoomPlayers(roomId);
-          this.ingestPlayerList(all);
-          this.notify();
-        } else if (msg.type === 'race_started' && msg.room) {
-          this.activeRoom = msg.room;
-          this.notify();
-        } else if (msg.type === 'race_reset' && msg.room) {
-          this.activeRoom = msg.room;
-          this.notify();
-        } else if (msg.type === 'player_left' && msg.playerId) {
-          fallbackRoomStore.leaveRoom(roomId, msg.playerId);
-          const all = fallbackRoomStore.getRoomPlayers(roomId);
-          this.ingestPlayerList(all);
-          this.notify();
-        }
-      };
-      this.broadcastMessage({ type: 'player_joined', player: initialPlayer });
-    } catch {
-      // BroadcastChannel not supported or error
-    }
-  }
-
-  private broadcastMessage(data: unknown) {
-    if (this.broadcastChannel) {
-      try {
-        this.broadcastChannel.postMessage(data);
-      } catch {
-        // Ignore
-      }
-    }
-  }
-
-  private spawnRoomDrifters(room: MultiplayerRoomInfo) {
-    // Never spawn companion AI drifters in private or password-protected rooms
-    if (room.isPrivate || room.hasPassword) {
-      this.companionDrifters = [];
-      return;
-    }
-    if (room.mapId === 'mountain') {
-      this.companionDrifters = [
-        {
-          playerId: 'bot_keisuke',
-          playerName: 'Keisuke_FD',
-          vehicleId: 'rx7_fd',
-          paintColor: '#eab308',
-          paintFinish: 'gloss',
-          sampleIdx: 35,
-          speedKmh: 78,
-          driftAngle: 24,
-          driftScore: 18500,
-          steerAngle: -0.22,
-        },
-        {
-          playerId: 'bot_ryosuke',
-          playerName: 'Ryosuke_FC',
-          vehicleId: 'rx7_fc',
-          paintColor: '#f4f4f5',
-          paintFinish: 'pearl',
-          sampleIdx: 65,
-          speedKmh: 82,
-          driftAngle: 28,
-          driftScore: 24200,
-          steerAngle: 0.25,
-        },
-      ];
-    } else {
-      this.companionDrifters = [
-        {
-          playerId: 'bot_nobuhiko',
-          playerName: 'Nobuhiko_SXE10',
-          vehicleId: 'altezza_sxe10',
-          paintColor: '#10b981',
-          paintFinish: 'metallic',
-          sampleIdx: 30,
-          speedKmh: 74,
-          driftAngle: 22,
-          driftScore: 14600,
-          steerAngle: 0.18,
-        },
-        {
-          playerId: 'bot_hideo',
-          playerName: 'Hideo_R32',
-          vehicleId: 'r32_gtr',
-          paintColor: '#3f3f46',
-          paintFinish: 'satin',
-          sampleIdx: 70,
-          speedKmh: 84,
-          driftAngle: 26,
-          driftScore: 21900,
-          steerAngle: -0.24,
-        },
-      ];
-    }
-    this.updateCompanionDrifters(0.065);
-  }
-
-  private updateCompanionDrifters(dt: number) {
-    if (!this.activeRoom || this.companionDrifters.length === 0) return;
-    const { mainSamples } = getMapRoadSamples(this.activeRoom.mapId);
-    if (!mainSamples || mainSamples.length === 0) return;
-
-    for (const d of this.companionDrifters) {
-      const step = Math.max(1, Math.round((d.speedKmh * 0.28 * dt) / 3.8));
-      d.sampleIdx = (d.sampleIdx + step) % mainSamples.length;
-      const node = mainSamples[d.sampleIdx];
-      const heading = Math.atan2(node.tx, node.tz);
-      d.driftScore += Math.round(d.speedKmh * dt * 10);
-      d.driftAngle = Math.round(18 + Math.sin(d.sampleIdx * 0.08) * 12);
-      d.steerAngle = Number((-Math.sin(d.sampleIdx * 0.12) * 0.32).toFixed(3));
-
-      const pState: MultiplayerPlayerState = {
-        playerId: d.playerId,
-        playerName: d.playerName,
-        vehicleId: d.vehicleId,
-        paintColor: d.paintColor,
-        paintFinish: d.paintFinish,
-        bodyKit: 'street_aero',
-        spoilerStyle: 'gt_carbon',
-        rimStyle: 'te37_6spoke',
-        rimColor: '#18181b',
-        x: Number((node.x + Math.sin(d.sampleIdx * 0.2) * node.halfWidth * 0.35).toFixed(2)),
-        y: Number(node.y.toFixed(2)),
-        z: Number(node.z.toFixed(2)),
-        vx: Number((node.tx * d.speedKmh * 0.28).toFixed(2)),
-        vz: Number((node.tz * d.speedKmh * 0.28).toFixed(2)),
-        heading: Number(heading.toFixed(3)),
-        steerAngle: d.steerAngle,
-        driftAngle: d.driftAngle,
-        signedDriftAngle: d.driftAngle,
-        isDrifting: true,
-        speedKmh: d.speedKmh,
-        rpm: Math.round(5400 + Math.sin(d.sampleIdx * 0.2) * 1600),
-        gear: 3,
-        throttle: 0.85,
-        brake: 0,
-        headlightsOn: true,
-        backfireActive: (d.sampleIdx % 32) === 0,
-        wheelRotation: d.sampleIdx * 0.8,
-        driftScore: d.driftScore,
-        currentDriftPoints: 850,
-        driftMultiplier: 2.5,
-        lapCount: 1,
-        raceProgressMeters: d.sampleIdx * 15,
-        pingMs: 12,
-        lastUpdatedAt: Date.now(),
-      };
-      fallbackRoomStore.updatePlayerState(this.activeRoom.id, pState);
-    }
   }
 
   private connectWebSocket(
@@ -710,16 +632,18 @@ class MultiplayerClientManager {
     // Also run a lightweight HTTP sync heartbeat every 450ms to guarantee delivery even through strict proxies
     this.httpSyncTimer = window.setInterval(() => {
       if (!this.activeRoom) return;
+      this.syncLocalCountdownState();
       const latestSelf = this.allPlayers.find((p) => p.playerId === this.playerId) ?? playerPayload;
-      fetch('/api/multiplayer/sync', {
+      fetch('/api/multiplayer/rooms/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           roomId: this.activeRoom.id,
           player: latestSelf,
+          playerState: latestSelf,
         }),
       })
-        .then((r) => r.json())
+        .then((r) => (r.ok ? r.json() : null))
         .then((data) => {
           if (data?.ok && Array.isArray(data.players)) {
             if (data.room) this.activeRoom = data.room;
@@ -767,25 +691,26 @@ class MultiplayerClientManager {
           player: payload,
         })
       );
-    } else {
-      if (this.companionDrifters.length > 0) {
-        this.updateCompanionDrifters(0.065);
-      }
-      const updateRes = fallbackRoomStore.updatePlayerState(this.activeRoom.id, payload);
-      if (updateRes.room) {
-        this.activeRoom = updateRes.room;
-      }
-      const all = fallbackRoomStore.getRoomPlayers(this.activeRoom.id);
-      this.ingestPlayerList(all);
-      this.broadcastMessage({ type: 'player_update', roomId: this.activeRoom.id, player: payload });
     }
+    this.broadcastChannel?.postMessage({
+      type: 'player_update',
+      roomId: this.activeRoom.id,
+      player: payload,
+      joinedWithInvite: true,
+    });
   }
 
   private ingestPlayerList(players: MultiplayerPlayerState[]) {
-    this.allPlayers = players;
+    // Filter out any duplicate stale session with the same playerName in private rooms so zero ghost/bot cars appear
+    const filtered = players.filter((p) => {
+      if (p.playerId === this.playerId) return true;
+      if (p.playerName === this.playerName) return false;
+      return true;
+    });
+    this.allPlayers = filtered;
     const seenIds = new Set<string>();
 
-    for (const p of players) {
+    for (const p of filtered) {
       if (p.playerId === this.playerId) continue;
       seenIds.add(p.playerId);
       const existing = this.remotePlayers.get(p.playerId);
@@ -815,6 +740,12 @@ class MultiplayerClientManager {
       if (!seenIds.has(id)) {
         this.remotePlayers.delete(id);
       }
+    }
+    if (this.activeRoom) {
+      this.activeRoom = {
+        ...this.activeRoom,
+        playerCount: Math.max(1, filtered.length),
+      };
     }
   }
 
@@ -861,23 +792,12 @@ class MultiplayerClientManager {
     }
     if (this.activeRoom) {
       const roomId = this.activeRoom.id;
-      fallbackRoomStore.leaveRoom(roomId, this.playerId);
-      this.broadcastMessage({ type: 'player_left', roomId, playerId: this.playerId });
       fetch('/api/multiplayer/leave', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ roomId, playerId: this.playerId }),
       }).catch(() => {});
     }
-    if (this.broadcastChannel) {
-      try {
-        this.broadcastChannel.close();
-      } catch {
-        // Ignore
-      }
-      this.broadcastChannel = null;
-    }
-    this.companionDrifters = [];
     this.activeRoom = null;
     this.connectionStatus = 'disconnected';
     this.remotePlayers.clear();

@@ -1,11 +1,5 @@
 import * as THREE from 'three';
 
-const garageTextureCache = new Map<string, THREE.Texture>();
-
-export function clearGarageTextureCache(): void {
-  garageTextureCache.clear();
-}
-
 export interface BuiltGarageShowroom {
   group: THREE.Group;
   platformGroup: THREE.Group;
@@ -21,12 +15,42 @@ export const SHOWROOM_BG_HEX = 0xd4dfe8;
  * Provides realistic horizon, sky, and lateral softbox reflections on metallic clearcoat paint,
  * chrome, and glass without overexposing horizontal roof/hood surfaces.
  */
-export function createNaturalAutomotiveEnvMap(renderer: THREE.WebGLRenderer): THREE.Texture {
-  const cacheKey = 'garage_studio_env';
-  if (garageTextureCache.has(cacheKey)) {
-    return garageTextureCache.get(cacheKey)!;
-  }
+const _garageTexCache = new Map<string, THREE.CanvasTexture>();
 
+function createFastEquirectEnvMap(
+  key: string,
+  topHex: string,
+  horizonHex: string,
+  groundHex: string
+): THREE.CanvasTexture {
+  const cached = _garageTexCache.get(key);
+  if (cached) return cached;
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 32;
+  const ctx = canvas.getContext('2d')!;
+  const grad = ctx.createLinearGradient(0, 0, 0, 32);
+  grad.addColorStop(0, topHex);
+  grad.addColorStop(0.48, horizonHex);
+  grad.addColorStop(0.54, horizonHex);
+  grad.addColorStop(1, groundHex);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 64, 32);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.needsUpdate = true;
+  _garageTexCache.set(key, tex);
+  return tex;
+}
+
+export function createNaturalAutomotiveEnvMap(
+  renderer: THREE.WebGLRenderer,
+  isSoftwareGl = false
+): THREE.Texture {
+  if (isSoftwareGl) {
+    return createFastEquirectEnvMap('env:studio', '#2563eb', '#f8fafc', '#334155');
+  }
   const envScene = new THREE.Scene();
 
   // 1. Sky-to-Horizon-to-Ground Gradient Dome
@@ -99,7 +123,6 @@ export function createNaturalAutomotiveEnvMap(renderer: THREE.WebGLRenderer): TH
   (domeMesh.material as THREE.Material).dispose();
   stripMat.dispose();
 
-  garageTextureCache.set(cacheKey, envTex);
   return envTex;
 }
 
@@ -112,7 +135,8 @@ export function createNaturalAutomotiveEnvMap(renderer: THREE.WebGLRenderer): TH
  */
 export function createOutdoorTougeEnvMap(
   renderer: THREE.WebGLRenderer,
-  modeOrIsNight: boolean | 'daytime' | 'golden' | 'night' = 'daytime'
+  modeOrIsNight: boolean | 'daytime' | 'golden' | 'night' = 'daytime',
+  isSoftwareGl = false
 ): THREE.Texture {
   const mode: 'daytime' | 'golden' | 'night' =
     typeof modeOrIsNight === 'boolean'
@@ -121,14 +145,19 @@ export function createOutdoorTougeEnvMap(
         : 'daytime'
       : modeOrIsNight;
 
-  const cacheKey = `outdoor_env_${mode}`;
-  if (garageTextureCache.has(cacheKey)) {
-    return garageTextureCache.get(cacheKey)!;
+  if (isSoftwareGl) {
+    if (mode === 'night') {
+      return createFastEquirectEnvMap('env:night', '#0f172a', '#334155', '#090d16');
+    }
+    if (mode === 'golden') {
+      return createFastEquirectEnvMap('env:golden', '#3730a3', '#fb923c', '#27272a');
+    }
+    return createFastEquirectEnvMap('env:daytime', '#0284c7', '#e0f2fe', '#334155');
   }
 
   const envScene = new THREE.Scene();
 
-  const domeGeo = new THREE.SphereGeometry(24, 64, 48);
+  const domeGeo = new THREE.SphereGeometry(24, 32, 24);
   const posAttr = domeGeo.attributes.position;
   const colors = new Float32Array(posAttr.count * 3);
   const c = new THREE.Color();
@@ -246,16 +275,12 @@ export function createOutdoorTougeEnvMap(
   sunCardMat.dispose();
   skyRibbonMat.dispose();
 
-  garageTextureCache.set(cacheKey, envTex);
   return envTex;
 }
 
 function createStudioBlueprintGridTexture(renderer: THREE.WebGLRenderer): THREE.CanvasTexture {
-  const cacheKey = 'studio_grid';
-  if (garageTextureCache.has(cacheKey)) {
-    return garageTextureCache.get(cacheKey) as THREE.CanvasTexture;
-  }
-
+  const cached = _garageTexCache.get('studioGrid');
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 512;
   canvas.height = 512;
@@ -286,16 +311,13 @@ function createStudioBlueprintGridTexture(renderer: THREE.WebGLRenderer): THREE.
   tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(18, 18);
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  garageTextureCache.set(cacheKey, tex);
+  _garageTexCache.set('studioGrid', tex);
   return tex;
 }
 
 function createContactShadowTexture(): THREE.CanvasTexture {
-  const cacheKey = 'contact_shadow';
-  if (garageTextureCache.has(cacheKey)) {
-    return garageTextureCache.get(cacheKey) as THREE.CanvasTexture;
-  }
-
+  const cached = _garageTexCache.get('contactShadow');
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
@@ -327,16 +349,13 @@ function createContactShadowTexture(): THREE.CanvasTexture {
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
-  garageTextureCache.set(cacheKey, tex);
+  _garageTexCache.set('contactShadow', tex);
   return tex;
 }
 
 function createGarageFloorTexture(renderer: THREE.WebGLRenderer): THREE.CanvasTexture {
-  const cacheKey = 'garage_floor';
-  if (garageTextureCache.has(cacheKey)) {
-    return garageTextureCache.get(cacheKey) as THREE.CanvasTexture;
-  }
-
+  const cached = _garageTexCache.get('garageFloor');
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 512;
   canvas.height = 512;
@@ -369,16 +388,13 @@ function createGarageFloorTexture(renderer: THREE.WebGLRenderer): THREE.CanvasTe
   tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(8, 8);
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  garageTextureCache.set(cacheKey, tex);
+  _garageTexCache.set('garageFloor', tex);
   return tex;
 }
 
 function createJdmBannerTexture(renderer: THREE.WebGLRenderer): THREE.CanvasTexture {
-  const cacheKey = 'jdm_banner';
-  if (garageTextureCache.has(cacheKey)) {
-    return garageTextureCache.get(cacheKey) as THREE.CanvasTexture;
-  }
-
+  const cached = _garageTexCache.get('jdmBanner');
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 512;
   canvas.height = 128;
@@ -402,7 +418,7 @@ function createJdmBannerTexture(renderer: THREE.WebGLRenderer): THREE.CanvasText
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  garageTextureCache.set(cacheKey, tex);
+  _garageTexCache.set('jdmBanner', tex);
   return tex;
 }
 
@@ -774,10 +790,6 @@ export function buildGarageShowroom(
         }
       }
     });
-    floorTex.dispose();
-    bannerTex.dispose();
-    studioGridTex.dispose();
-    contactShadowTex.dispose();
   }
 
   return {

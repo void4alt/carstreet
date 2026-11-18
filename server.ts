@@ -118,8 +118,17 @@ async function startServer() {
   });
 
   app.post('/api/multiplayer/rooms/create', (req, res) => {
-    const room = store.createRoom(req.body || {});
-    res.json({ ok: true, room });
+    const body = req.body || {};
+    const room = store.createRoom(body);
+    if (body.player?.playerId) {
+      const joined = store.joinRoom(room.id, body.player as MultiplayerPlayerState, body.password);
+      if (joined.ok && joined.room) {
+        broadcastRoomState(joined.room.id);
+        res.json({ ok: true, room: joined.room, players: joined.players ?? [] });
+        return;
+      }
+    }
+    res.json({ ok: true, room, players: [] });
   });
 
   app.post('/api/multiplayer/rooms/join', (req, res) => {
@@ -169,8 +178,10 @@ async function startServer() {
     res.json(result);
   });
 
-  app.post('/api/multiplayer/sync', (req, res) => {
-    const { roomId, player } = req.body || {};
+  const handleSyncRequest = (req: express.Request, res: express.Response) => {
+    const body = req.body || {};
+    const roomId = body.roomId;
+    const player = body.player || body.playerState;
     if (!roomId || !player?.playerId) {
       res.status(400).json({ ok: false, error: 'Missing roomId or player.' });
       return;
@@ -186,16 +197,22 @@ async function startServer() {
       players: result.players,
       serverTime: Date.now(),
     });
-  });
+  };
 
-  app.post('/api/multiplayer/leave', (req, res) => {
+  app.post('/api/multiplayer/sync', handleSyncRequest);
+  app.post('/api/multiplayer/rooms/sync', handleSyncRequest);
+
+  const handleLeaveRequest = (req: express.Request, res: express.Response) => {
     const { roomId, playerId } = req.body || {};
     if (roomId && playerId) {
       store.leaveRoom(String(roomId), String(playerId));
       broadcastRoomState(String(roomId));
     }
     res.json({ ok: true });
-  });
+  };
+
+  app.post('/api/multiplayer/leave', handleLeaveRequest);
+  app.post('/api/multiplayer/rooms/leave', handleLeaveRequest);
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

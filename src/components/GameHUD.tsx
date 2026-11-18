@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   computeDynoCurve,
   computeHandlingPreviewMetrics,
@@ -67,16 +67,6 @@ import {
 } from '../game/types';
 import { getVehicleById, VEHICLES_CATALOG } from '../game/vehiclesData';
 import { GarageDynoLiveState } from './DriftCanvas';
-import {
-  canRequestFullscreen,
-  exitFullscreen,
-  isFullscreen,
-  isIOSSafari,
-  isMobileOrTouch,
-  isStandalonePWA,
-  requestFullscreen,
-  toggleFullscreen,
-} from '../utils/fullscreen';
 
 export interface TelemetryHandles {
   updateTelemetry: (state: CarState) => void;
@@ -107,7 +97,6 @@ interface GameHUDProps {
   onSelectViewpoint: (idx: number) => void;
   onResetCar: () => void;
   onToggleMute: () => void;
-  isStartingGame?: boolean;
   onStartGame: () => void;
   onOpenGarage: () => void;
   onPauseGame: () => void;
@@ -170,7 +159,6 @@ export function GameHUD({
   onSelectViewpoint,
   onResetCar,
   onToggleMute,
-  isStartingGame = false,
   onStartGame,
   onOpenGarage,
   onPauseGame,
@@ -274,43 +262,13 @@ export function GameHUD({
     }
   }, [gameState]);
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
-    typeof window !== 'undefined' ? window.innerWidth < 1024 || isMobileOrTouch() : false
+    typeof window !== 'undefined' ? window.innerWidth < 900 : false
   );
   const [isPortraitMobile, setIsPortraitMobile] = useState(() =>
     typeof window !== 'undefined'
-      ? window.innerWidth < window.innerHeight && (window.innerWidth < 800 || isMobileOrTouch())
+      ? window.innerWidth < window.innerHeight && window.innerWidth < 680
       : false
   );
-  const [fsActive, setFsActive] = useState(() => isFullscreen());
-  const [iosSafariTip, setIosSafariTip] = useState(false);
-  const [mobileGarageTab, setMobileGarageTab] = useState<'specs' | 'customize' | 'roster' | 'none'>('customize');
-
-  useEffect(() => {
-    const updateFs = () => {
-      const active = isFullscreen();
-      setFsActive(active);
-      if (active !== gameSettings.fullscreen) {
-        onUpdateSettings?.({ fullscreen: active });
-      }
-    };
-    document.addEventListener('fullscreenchange', updateFs);
-    document.addEventListener('webkitfullscreenchange', updateFs);
-    return () => {
-      document.removeEventListener('fullscreenchange', updateFs);
-      document.removeEventListener('webkitfullscreenchange', updateFs);
-    };
-  }, [gameSettings.fullscreen, onUpdateSettings]);
-
-  const handleToggleFullscreen = React.useCallback(async () => {
-    if (!canRequestFullscreen() && isIOSSafari() && !isStandalonePWA()) {
-      setIosSafariTip(true);
-      setTimeout(() => setIosSafariTip(false), 6000);
-      return;
-    }
-    const next = await toggleFullscreen();
-    setFsActive(next);
-    onUpdateSettings?.({ fullscreen: next });
-  }, [onUpdateSettings]);
   const [wheelVisualDeg, setWheelVisualDeg] = useState(0);
   const wheelDragOriginRef = useRef<{ cx: number; cy: number } | null>(null);
   const wheelPointerIdRef = useRef<number | null>(null);
@@ -363,8 +321,6 @@ export function GameHUD({
   const [mpNewRoomPassword, setMpNewRoomPassword] = useState('');
   const [mpNewRoomMaxPlayers, setMpNewRoomMaxPlayers] = useState(8);
   const [mpNewRoomCollisions, setMpNewRoomCollisions] = useState(false);
-  // On mobile devices, multiplayer standings default to collapsed to prevent driving view distraction
-  const [mpLeaderboardExpanded, setMpLeaderboardExpanded] = useState<boolean>(() => !isMobileViewport);
 
   // Persistent Driver Profile stats
   const [driverProfile, setDriverProfile] = useState(() => {
@@ -581,9 +537,112 @@ export function GameHUD({
   // Live Multiplayer Tandem Telemetry & Synchronized Race Countdown
   const [tandemTelemetry, setTandemTelemetry] = useState<TandemTelemetryResult | null>(null);
   const [raceCountdownLabel, setRaceCountdownLabel] = useState<string | null>(null);
+  const soloRaceStartMsRef = useRef<number>(0);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [mobileGarageTab, setMobileGarageTab] = useState<'view' | 'specs' | 'custom'>('custom');
+  const [mpHudMinimized, setMpHudMinimized] = useState<boolean>(false);
+  const [portraitBannerDismissed, setPortraitBannerDismissed] = useState<boolean>(false);
+  const [showMatchEndStats, setShowMatchEndStats] = useState<boolean>(false);
+  const prevRaceStatusRef = useRef<string>('lobby');
+
+  const openPostMatchStats = useCallback(() => {
+    const c = latestCarRef.current;
+    if (c) {
+      setPauseSnapshot({
+        totalScore: Math.round(c.totalDriftScore + c.currentDriftPoints),
+        bestChain: Math.round(c.bestDriftChain),
+        distanceKm: (c.distanceDriven / 1000).toFixed(2),
+        maxSpeed: Math.round(c.maxSpeedKmh),
+        maxDriftAngle: Math.round(c.maxDriftAngleDeg ?? c.driftAngle ?? 0),
+        driftDurationSec: (c.totalDriftDurationSec ?? 0).toFixed(1),
+        smoothnessPct: Math.round(c.driftSmoothnessPct ?? 92),
+        consistencyPct: Math.round(c.driftConsistencyPct ?? 90),
+      });
+    }
+    setShowMatchEndStats(true);
+  }, [latestCarRef]);
+
+  const toggleFullscreen = () => {
+    if (typeof document === 'undefined') return;
+    try {
+      const docEl = document.documentElement as HTMLElement & {
+        webkitRequestFullscreen?: () => Promise<void>;
+      };
+      const doc = document as Document & {
+        webkitFullscreenElement?: Element | null;
+        webkitExitFullscreen?: () => Promise<void>;
+      };
+      if (!document.fullscreenElement && !doc.webkitFullscreenElement) {
+        if (docEl.requestFullscreen) {
+          docEl.requestFullscreen().catch(() => {});
+        } else if (docEl.webkitRequestFullscreen) {
+          docEl.webkitRequestFullscreen().catch(() => {});
+        }
+        setIsFullscreen(true);
+      } else {
+        if (document.exitFullscreen) {
+          document.exitFullscreen().catch(() => {});
+        } else if (doc.webkitExitFullscreen) {
+          doc.webkitExitFullscreen().catch(() => {});
+        }
+        setIsFullscreen(false);
+      }
+      window.scrollTo(0, 1);
+    } catch {
+      // Ignore iframe fullscreen restrictions
+    }
+  };
+
+  const enterFullscreenIfMobile = () => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    if (window.innerWidth < 960 || window.innerHeight < 540 || 'ontouchstart' in window) {
+      try {
+        const docEl = document.documentElement as HTMLElement & {
+          webkitRequestFullscreen?: () => Promise<void>;
+        };
+        const doc = document as Document & {
+          webkitFullscreenElement?: Element | null;
+        };
+        if (!document.fullscreenElement && !doc.webkitFullscreenElement) {
+          if (docEl.requestFullscreen) {
+            docEl.requestFullscreen().catch(() => {});
+          } else if (docEl.webkitRequestFullscreen) {
+            docEl.webkitRequestFullscreen().catch(() => {});
+          }
+        }
+        window.scrollTo(0, 1);
+      } catch {
+        // Ignore
+      }
+    }
+  };
 
   useEffect(() => {
-    if (!mpConnectedRoom) {
+    if (typeof document === 'undefined') return;
+    const onFsChange = () => {
+      const doc = document as Document & { webkitFullscreenElement?: Element | null };
+      setIsFullscreen(Boolean(document.fullscreenElement || doc.webkitFullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    document.addEventListener('webkitfullscreenchange', onFsChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFsChange);
+      document.removeEventListener('webkitfullscreenchange', onFsChange);
+    };
+  }, []);
+
+  // Trigger a clean 3-2-1-GO! countdown when starting a Race Mode session that auto-clears after 1 second
+  useEffect(() => {
+    if (gameState === 'playing' && (gameSettings.handlingMode ?? 'drift') === 'race' && !mpConnectedRoom) {
+      soloRaceStartMsRef.current = Date.now();
+    } else if (gameState !== 'playing') {
+      soloRaceStartMsRef.current = 0;
+      setRaceCountdownLabel(null);
+    }
+  }, [gameState, gameSettings.handlingMode, mpConnectedRoom]);
+
+  useEffect(() => {
+    if (gameState !== 'playing' && !mpConnectedRoom) {
       setTandemTelemetry(null);
       setRaceCountdownLabel(null);
       return;
@@ -610,56 +669,60 @@ export function GameHUD({
 
       const room = multiplayerClient.getRoom();
       const cdStartMs = room?.raceCountdownStartMs ?? 0;
-      const raceStartMs = room?.raceStartMs ?? 0;
-      const now = Date.now();
-      if (room?.raceStatus === 'countdown' && cdStartMs > 0) {
-        const elapsed = now - cdStartMs;
-        if (elapsed >= 4500) {
-          // Hard cap: 3.5s countdown + 1.0s GO! = 4.5s max, clear banner
-          setRaceCountdownLabel(null);
-        } else if (elapsed >= 3500) {
+      const soloStartMs = soloRaceStartMsRef.current;
+      const activeCountdownOrigin = cdStartMs > 0 ? cdStartMs : soloStartMs;
+
+      if (activeCountdownOrigin > 0) {
+        const elapsed = Date.now() - activeCountdownOrigin;
+        if (elapsed >= 0 && elapsed < 900) {
+          setRaceCountdownLabel('3');
+        } else if (elapsed >= 900 && elapsed < 1800) {
+          setRaceCountdownLabel('2');
+        } else if (elapsed >= 1800 && elapsed < 2700) {
+          setRaceCountdownLabel('1');
+        } else if (elapsed >= 2700 && elapsed < 3800) {
           setRaceCountdownLabel('GO!');
         } else {
-          const remSec = Math.ceil((3500 - elapsed) / 1000);
-          if (remSec >= 3) setRaceCountdownLabel('3');
-          else if (remSec === 2) setRaceCountdownLabel('2');
-          else if (remSec === 1) setRaceCountdownLabel('1');
-          else setRaceCountdownLabel('GO!');
+          setRaceCountdownLabel(null);
+          if (soloStartMs > 0 && elapsed >= 3800) {
+            soloRaceStartMsRef.current = 0;
+          }
         }
-      } else if (
-        room?.raceStatus === 'active' &&
-        raceStartMs > 0 &&
-        now >= raceStartMs &&
-        now - raceStartMs < 1200
-      ) {
-        setRaceCountdownLabel('GO!');
       } else {
         setRaceCountdownLabel(null);
       }
-    }, 120);
+    }, 100);
     return () => window.clearInterval(timer);
-  }, [mpConnectedRoom, mpRemotePlayers]);
+  }, [gameState, mpConnectedRoom, mpRemotePlayers]);
 
   // Track responsive viewport width and portrait/landscape orientation for auto PC vs. Mobile controls
   useEffect(() => {
     const onResize = () => {
-      setIsMobileViewport(window.innerWidth < 1024 || isMobileOrTouch());
-      setIsPortraitMobile(
-        window.innerWidth < window.innerHeight && (window.innerWidth < 800 || isMobileOrTouch())
-      );
+      setIsMobileViewport(window.innerWidth < 920 || window.innerHeight < 520);
+      setIsPortraitMobile(window.innerWidth < window.innerHeight && window.innerWidth < 680);
     };
+    onResize();
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // Subscribe to Multiplayer room & remote player updates
+  // Subscribe to Multiplayer room & remote player updates (strictly excluding local player from remote list)
   useEffect(() => {
-    const unsub = multiplayerClient.subscribe((room, remotes) => {
+    const unsub = multiplayerClient.subscribe((room, allPlayers) => {
+      const selfId = multiplayerClient.getPlayerId();
+      const selfName = multiplayerClient.getPlayerName();
+      const nextStatus = room?.raceStatus ?? 'lobby';
+      if (nextStatus === 'finished' && prevRaceStatusRef.current !== 'finished') {
+        openPostMatchStats();
+      }
+      prevRaceStatusRef.current = nextStatus;
       setMpConnectedRoom(room ? { ...room } : null);
-      setMpRemotePlayers([...remotes]);
+      setMpRemotePlayers(
+        allPlayers.filter((p) => p.playerId !== selfId && p.playerName !== selfName)
+      );
     });
     return unsub;
-  }, []);
+  }, [openPostMatchStats]);
 
   // Refresh public rooms when Multiplayer modal opens
   useEffect(() => {
@@ -915,11 +978,13 @@ export function GameHUD({
           }
         }
         if (driftBannerRef.current) {
-          driftBannerRef.current.style.opacity = cs.isDrifting || cs.currentDriftPoints > 25 ? '1' : '0.35';
+          const isMob = typeof window !== 'undefined' && window.innerWidth <= 960;
+          driftBannerRef.current.style.opacity =
+            cs.isDrifting || cs.currentDriftPoints > 25 ? '1' : isMob ? '0' : '0.32';
         }
         if (driftPointsTextRef.current) {
           driftPointsTextRef.current.textContent =
-            cs.currentDriftPoints > 0 ? `+${Math.round(cs.currentDriftPoints)}` : 'READY';
+            cs.currentDriftPoints > 0 ? `+${Math.round(cs.currentDriftPoints)}` : '0 PTS';
         }
         if (driftMultTextRef.current) {
           driftMultTextRef.current.textContent = `${cs.driftMultiplier.toFixed(1)}x`;
@@ -1238,201 +1303,198 @@ export function GameHUD({
         )}
 
         {/* TOP BAR: Showroom Header, Map Target Selector, Drive CTA */}
-        <div className="relative z-10 pointer-events-auto flex items-center justify-between gap-2 bg-stone-950/92 border border-stone-800 rounded-2xl px-3.5 py-2 shadow-xl">
-          <div className="flex items-center gap-2.5 shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                soundEngine.playUiChime(420);
-                onReturnToTitle();
-              }}
-              className="px-2.5 py-1 rounded-lg bg-stone-900 hover:bg-stone-800 border border-stone-700 text-xs font-medium text-stone-200 cursor-pointer whitespace-nowrap shrink-0"
-            >
-              ← Title
-            </button>
-            <div>
-              <div className="text-[9px] font-mono-tabular uppercase tracking-widest text-orange-400 leading-tight">
-                {isSheetMode
-                  ? '360° CAD TURNAROUND SHEET'
-                  : '地下駐車場 · TOKYO UNDERGROUND SHOWROOM'}
-              </div>
-              <div className="text-sm md:text-base font-display font-bold text-stone-100 tracking-wide leading-tight">
-                {selectedVehicle.manufacturer.toUpperCase()} {selectedVehicle.name.toUpperCase()} ({currentIndex + 1}/{VEHICLES_CATALOG.length})
+        <div className="relative z-10 pointer-events-auto flex flex-col gap-1.5 bg-stone-950/92 border border-stone-800 rounded-2xl px-3 py-2 shadow-xl">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playUiChime(420);
+                  onReturnToTitle();
+                }}
+                className="px-2.5 py-1 rounded-lg bg-stone-900 hover:bg-stone-800 border border-stone-700 text-xs font-medium text-stone-200 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                ← Title
+              </button>
+              <div>
+                <div className="text-[9px] font-mono-tabular uppercase tracking-widest text-orange-400 leading-tight hidden sm:block">
+                  {isSheetMode
+                    ? '360° CAD TURNAROUND SHEET'
+                    : '地下駐車場 · TOKYO UNDERGROUND SHOWROOM'}
+                </div>
+                <div className="text-xs sm:text-sm md:text-base font-display font-bold text-stone-100 tracking-wide leading-tight">
+                  {selectedVehicle.manufacturer.toUpperCase()} {selectedVehicle.name.toUpperCase()} ({currentIndex + 1}/{VEHICLES_CATALOG.length})
+                </div>
               </div>
             </div>
-          </div>
 
-          {/* Camera Inspection Angle Bar */}
-          <div
-            className="flex items-center gap-1 bg-stone-900/95 border border-stone-800 rounded-xl p-1"
-            role="group"
-            aria-label="Showroom Camera Angles"
-          >
-            {(
-              [
-                { id: 'sheet', label: '360° Sheet' },
-                { id: 'turntable', label: '360° Turntable' },
-                { id: 'front', label: 'Front' },
-                { id: 'side', label: 'Side' },
-                { id: 'rear', label: 'Rear' },
-                { id: 'top', label: 'Top' },
-                { id: 'interior', label: 'Cockpit' },
-                { id: 'dyno', label: '📊 Dyno Bay' },
-              ] as { id: GarageCameraView; label: string }[]
-            ).map((cam) => (
+            {/* Camera Inspection Angle Bar (Scrollable on Mobile) */}
+            <div
+              className="flex items-center gap-1 bg-stone-900/95 border border-stone-800 rounded-xl p-1 overflow-x-auto max-w-full"
+              role="group"
+              aria-label="Showroom Camera Angles"
+            >
+              {(
+                [
+                  { id: 'sheet', label: '360° Sheet' },
+                  { id: 'turntable', label: '360° Turntable' },
+                  { id: 'front', label: 'Front' },
+                  { id: 'side', label: 'Side' },
+                  { id: 'rear', label: 'Rear' },
+                  { id: 'top', label: 'Top' },
+                  { id: 'interior', label: 'Cockpit' },
+                  { id: 'dyno', label: '📊 Dyno Bay' },
+                ] as { id: GarageCameraView; label: string }[]
+              ).map((cam) => (
+                <button
+                  key={cam.id}
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playUiChime(520);
+                    onSelectGarageCamera(cam.id);
+                    if (cam.id === 'dyno') {
+                      setCustomTab('dyno');
+                      setMobileGarageTab('custom');
+                    }
+                  }}
+                  className={`px-2 py-1 rounded-lg text-[11px] sm:text-xs font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                    garageCameraView === cam.id
+                      ? 'bg-orange-500 text-stone-950 font-semibold'
+                      : 'text-stone-300 hover:text-white hover:bg-stone-800'
+                  }`}
+                >
+                  {cam.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Destination Map + Fullscreen + Primary Drive CTA */}
+            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
               <button
-                key={cam.id}
+                type="button"
+                onClick={toggleFullscreen}
+                title="Toggle Fullscreen"
+                className="px-2 py-1.5 rounded-xl bg-stone-900 hover:bg-stone-800 border border-stone-700 text-xs font-mono-tabular text-stone-200 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                {isFullscreen ? '⛶ Exit FS' : '⛶ Fullscreen'}
+              </button>
+              {isSheetMode && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playUiChime(500);
+                    setSheetUiExpanded((prev) => !prev);
+                  }}
+                  className={`px-2.5 py-1.5 rounded-xl text-xs font-mono-tabular font-semibold border cursor-pointer whitespace-nowrap ${
+                    sheetUiExpanded
+                      ? 'bg-orange-500/20 border-orange-500 text-orange-300'
+                      : 'bg-stone-900 border-stone-700 text-stone-200 hover:bg-stone-800'
+                  }`}
+                >
+                  {sheetUiExpanded ? 'Hide Workshop' : '⚙️ Customize'}
+                </button>
+              )}
+              <div className="hidden 2xl:flex items-center bg-stone-900 border border-stone-800 rounded-xl p-1">
+                <button
+                  type="button"
+                  onClick={() => onSelectMap('mountain')}
+                  className={`px-2 py-1 rounded-lg text-xs font-medium cursor-pointer whitespace-nowrap ${
+                    mapId === 'mountain'
+                      ? 'bg-amber-500 text-stone-950 font-semibold'
+                      : 'text-stone-400 hover:text-white'
+                  }`}
+                >
+                  Mountain Drift
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSelectMap('blossom')}
+                  className={`px-2 py-1 rounded-lg text-xs font-medium cursor-pointer whitespace-nowrap ${
+                    mapId === 'blossom'
+                      ? 'bg-orange-500 text-stone-950 font-semibold'
+                      : 'text-stone-400 hover:text-white'
+                  }`}
+                >
+                  Blossom Drift
+                </button>
+              </div>
+
+              <button
                 type="button"
                 onClick={() => {
-                  soundEngine.playUiChime(520);
-                  onSelectGarageCamera(cam.id);
-                  if (cam.id === 'dyno') {
-                    setCustomTab('dyno');
-                  }
+                  soundEngine.playUiChime(600);
+                  enterFullscreenIfMobile();
+                  setIsTestDrive(true);
+                  onStartGame();
                 }}
-                className={`px-2 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                  garageCameraView === cam.id
-                    ? 'bg-orange-500 text-stone-950 font-semibold'
-                    : 'text-stone-300 hover:text-white hover:bg-stone-800'
-                }`}
+                className="px-2.5 sm:px-3 py-1.5 rounded-xl font-display font-bold text-xs uppercase tracking-wider bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/60 text-emerald-300 cursor-pointer whitespace-nowrap shrink-0"
+                title="Test your current drift setup on the track and return to the Garage anytime"
               >
-                {cam.label}
+                🔧 Test Drive
               </button>
-            ))}
-          </div>
 
-          {/* Destination Map + Primary Drive CTA */}
-          <div className="flex items-center gap-2 shrink-0">
-            {isSheetMode && (
               <button
                 type="button"
+                data-start="true"
                 onClick={() => {
-                  soundEngine.playUiChime(500);
-                  setSheetUiExpanded((prev) => !prev);
+                  soundEngine.playUiChime(660);
+                  enterFullscreenIfMobile();
+                  setIsTestDrive(false);
+                  onStartGame();
                 }}
-                className={`px-2.5 py-1.5 rounded-xl text-xs font-mono-tabular font-semibold border cursor-pointer whitespace-nowrap ${
-                  sheetUiExpanded
-                    ? 'bg-orange-500/20 border-orange-500 text-orange-300'
-                    : 'bg-stone-900 border-stone-700 text-stone-200 hover:bg-stone-800'
-                }`}
-              >
-                {sheetUiExpanded ? 'Hide Workshop' : '⚙️ Customize'}
-              </button>
-            )}
-            <div className="hidden 2xl:flex items-center bg-stone-900 border border-stone-800 rounded-xl p-1">
-              <button
-                type="button"
-                onClick={() => onSelectMap('mountain')}
-                className={`px-2 py-1 rounded-lg text-xs font-medium cursor-pointer whitespace-nowrap ${
+                className={`px-3 sm:px-3.5 py-1.5 rounded-xl font-display font-bold text-xs uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0 shadow-lg ${
                   mapId === 'mountain'
-                    ? 'bg-amber-500 text-stone-950 font-semibold'
-                    : 'text-stone-400 hover:text-white'
+                    ? 'bg-amber-500 hover:bg-amber-400 text-stone-950'
+                    : 'bg-orange-500 hover:bg-orange-400 text-stone-950'
                 }`}
               >
-                Mountain Drift
-              </button>
-              <button
-                type="button"
-                onClick={() => onSelectMap('blossom')}
-                className={`px-2 py-1 rounded-lg text-xs font-medium cursor-pointer whitespace-nowrap ${
-                  mapId === 'blossom'
-                    ? 'bg-orange-500 text-stone-950 font-semibold'
-                    : 'text-stone-400 hover:text-white'
-                }`}
-              >
-                Blossom Drift
+                Drive {mapDef.name} →
               </button>
             </div>
-
-            {isMobileViewport && (
-              <div className="flex items-center gap-1 bg-stone-900 border border-stone-800 rounded-xl p-0.5 shrink-0 overflow-x-auto">
-                {(
-                  [
-                    { id: 'specs', label: '🚗 Specs' },
-                    { id: 'customize', label: '⚙️ Tune' },
-                    { id: 'roster', label: '🏎️ Cars' },
-                    { id: 'none', label: '👁️ 3D' },
-                  ] as const
-                ).map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    onClick={() => setMobileGarageTab(t.id)}
-                    className={`px-2 py-1 rounded-lg text-[10px] font-mono-tabular font-bold cursor-pointer whitespace-nowrap ${
-                      mobileGarageTab === t.id
-                        ? 'bg-amber-500 text-stone-950'
-                        : 'text-stone-300 hover:text-white'
-                    }`}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <button
-              type="button"
-              disabled={isStartingGame}
-              onClick={() => {
-                soundEngine.playUiChime(600);
-                setIsTestDrive(true);
-                if (isMobileOrTouch() || gameSettings.fullscreen) {
-                  requestFullscreen().catch(() => {});
-                }
-                onStartGame();
-              }}
-              className="px-3 py-1.5 rounded-xl font-display font-bold text-xs uppercase tracking-wider bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/60 text-emerald-300 cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-60 disabled:cursor-wait"
-              title="Test your current drift setup on the track and return to the Garage anytime"
-            >
-              {isStartingGame ? '🏎️ Starting...' : '🔧 Test Drive'}
-            </button>
-
-            <button
-              type="button"
-              data-start="true"
-              disabled={isStartingGame}
-              onClick={() => {
-                soundEngine.playUiChime(660);
-                setIsTestDrive(false);
-                if (isMobileOrTouch() || gameSettings.fullscreen) {
-                  requestFullscreen().catch(() => {});
-                }
-                onStartGame();
-              }}
-              className={`px-3.5 py-1.5 rounded-xl font-display font-bold text-xs uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0 shadow-lg disabled:opacity-60 disabled:cursor-wait ${
-                mapId === 'mountain'
-                  ? 'bg-amber-500 hover:bg-amber-400 text-stone-950'
-                  : 'bg-orange-500 hover:bg-orange-400 text-stone-950'
-              }`}
-            >
-              {isStartingGame ? '🏎️ Starting...' : `Drive ${mapDef.name} →`}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                soundEngine.playUiChime(520);
-                handleToggleFullscreen();
-              }}
-              className="px-2.5 py-1.5 rounded-xl text-xs font-mono-tabular font-semibold border border-stone-700 bg-stone-900 text-stone-200 hover:bg-stone-800 cursor-pointer whitespace-nowrap flex items-center gap-1"
-              title={fsActive ? 'Exit Fullscreen' : 'Fullscreen Mode (Hide Browser Header)'}
-            >
-              <span>{fsActive ? '🗗' : '⛶'}</span>
-              <span className="hidden sm:inline">{fsActive ? 'Window' : 'Fullscreen'}</span>
-            </button>
           </div>
+
+          {/* Mobile & Tablet Panel Switcher (Ensures 3D View, Vehicle Specs, and Customization are all accessible on mobile) */}
+          {showWorkshopPanels && (
+            <div className="flex lg:hidden items-center gap-1 pt-1 border-t border-stone-800/80">
+              {(
+                [
+                  { id: 'view', label: '🚗 3D Car View' },
+                  { id: 'specs', label: '📋 Specs & Lights' },
+                  { id: 'custom', label: '🎨 Customize & Tune' },
+                ] as const
+              ).map((mTab) => (
+                <button
+                  key={mTab.id}
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playUiChime(520);
+                    setMobileGarageTab(mTab.id);
+                  }}
+                  className={`flex-1 py-1 px-2 rounded-lg text-[11px] font-mono-tabular font-semibold cursor-pointer transition-colors ${
+                    mobileGarageTab === mTab.id
+                      ? 'bg-orange-500 text-stone-950 font-bold'
+                      : 'bg-stone-900 text-stone-300 hover:text-white'
+                  }`}
+                >
+                  {mTab.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* MIDDLE PERIMETER PANELS: Left Specs Card + Open Center 3D Viewport + Right Customization Workshop */}
         <div
-          className={`relative z-10 flex-1 flex items-center justify-between gap-4 my-3 overflow-hidden ${
+          className={`relative z-10 flex-1 flex items-center justify-between gap-3 my-2 overflow-hidden ${
             showWorkshopPanels ? '' : 'hidden'
           }`}
         >
           {/* LEFT PANEL: Vehicle Specifications & Interactive Showroom Controls */}
-          <div className={`pointer-events-auto w-72 md:w-80 bg-stone-950/90 border border-stone-800/95 rounded-2xl p-4 shadow-xl flex flex-col gap-3.5 max-h-full overflow-y-auto ${
-            isMobileViewport && mobileGarageTab !== 'specs' ? 'hidden' : ''
-          }`}>
+          <div
+            className={`pointer-events-auto w-full sm:w-80 lg:w-80 bg-stone-950/92 border border-stone-800/95 rounded-2xl p-3.5 sm:p-4 shadow-xl flex-col gap-3 max-h-full overflow-y-auto ${
+              mobileGarageTab === 'specs' ? 'flex' : 'hidden lg:flex'
+            }`}
+          >
             <div>
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-mono-tabular uppercase tracking-wider text-orange-400 font-semibold">
@@ -1671,9 +1733,11 @@ export function GameHUD({
           </div>
 
           {/* RIGHT PANEL: Modular Customization Foundation */}
-          <div className={`pointer-events-auto w-72 md:w-80 bg-stone-950/90 border border-stone-800/95 rounded-2xl p-4 shadow-xl flex flex-col gap-3.5 max-h-full overflow-y-auto ${
-            isMobileViewport && mobileGarageTab !== 'customize' ? 'hidden' : ''
-          }`}>
+          <div
+            className={`pointer-events-auto w-full sm:w-80 lg:w-80 ml-auto bg-stone-950/92 border border-stone-800/95 rounded-2xl p-3.5 sm:p-4 shadow-xl flex-col gap-3 max-h-full overflow-y-auto ${
+              mobileGarageTab === 'custom' ? 'flex' : 'hidden lg:flex'
+            }`}
+          >
             <div className="flex items-center justify-between">
               <div className="text-xs font-display font-bold uppercase tracking-wider text-stone-200">
                 CUSTOMIZATION WORKSHOP
@@ -3261,7 +3325,7 @@ export function GameHUD({
         {/* BOTTOM ROSTER: 25-Vehicle JDM & Exotic Collection Selector with Manufacturer Filter */}
         <div
           className={`relative z-10 pointer-events-auto bg-stone-950/92 border border-stone-800 rounded-2xl p-3 shadow-2xl flex flex-col gap-2 ${
-            showWorkshopPanels && (!isMobileViewport || mobileGarageTab === 'roster') ? '' : 'hidden'
+            showWorkshopPanels ? '' : 'hidden'
           }`}
         >
           <div className="flex flex-wrap items-center justify-between gap-2 px-1">
@@ -3637,27 +3701,6 @@ export function GameHUD({
   // ---------------------------------------------------------------------------
   const renderSharedModals = () => (
     <>
-      {/* iOS Safari Fullscreen / Add to Home Screen Instructions */}
-      {iosSafariTip && (
-        <aside
-          aria-label="iOS Safari Fullscreen Instructions"
-          className="fixed top-4 left-1/2 -translate-x-1/2 z-50 pointer-events-auto max-w-md w-[92vw] px-4 py-2.5 rounded-xl bg-neutral-950/95 border border-amber-500/70 text-amber-200 text-xs font-mono-tabular shadow-2xl flex items-center gap-2.5 backdrop-blur-md"
-        >
-          <span className="text-base shrink-0">📲</span>
-          <span className="leading-snug">
-            To hide the browser header on iPhone: Tap <strong>Share</strong> ⎋ → <strong>&apos;Add to Home Screen&apos;</strong> to launch in borderless full screen!
-          </span>
-          <button
-            type="button"
-            onClick={() => setIosSafariTip(false)}
-            className="ml-auto text-neutral-400 hover:text-white p-1 text-sm shrink-0 cursor-pointer"
-            aria-label="Dismiss banner"
-          >
-            ✕
-          </button>
-        </aside>
-      )}
-
       {/* OPEN-WORLD INTERACTIVE MAP, POIS & LIVE MULTIPLAYER RADAR MODAL */}
       {showWorldMapModal && (
         <div
@@ -3978,17 +4021,17 @@ export function GameHUD({
 
               <div className="flex flex-col justify-between">
                 <div className="text-[10px] font-mono-tabular uppercase text-zinc-400">
-                  SESSION STATUS
+                  SERVER &amp; SESSION STATUS
                 </div>
                 {mpConnectedRoom ? (
                   <div className="flex items-center justify-between gap-2 bg-emerald-500/15 border border-emerald-400/50 rounded-lg px-2.5 py-1.5">
                     <div>
                       <div className="text-xs font-display font-bold text-emerald-300 truncate">
-                        {mpConnectedRoom.name}
+                        ONLINE · {mpConnectedRoom.name}
                       </div>
                       <div className="text-[10px] font-mono-tabular text-zinc-300">
                         Code: <span className="text-amber-300 font-bold">{mpConnectedRoom.inviteCode}</span> ·{' '}
-                        {mpConnectedRoom.playerCount}/{mpConnectedRoom.maxPlayers} Drivers
+                        {1 + mpRemotePlayers.length}/{mpConnectedRoom.maxPlayers} Real Drivers (No Bots)
                       </div>
                     </div>
                     <button
@@ -4003,8 +4046,29 @@ export function GameHUD({
                     </button>
                   </div>
                 ) : (
-                  <div className="text-xs font-mono-tabular text-zinc-400 py-1.5">
-                    Offline / Solo Session — Select or create a room below
+                  <div className="flex items-center justify-between gap-2 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-2.5 py-1.5">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                      <div>
+                        <div className="text-xs font-display font-bold text-emerald-300">
+                          ONLINE SERVERS READY
+                        </div>
+                        <div className="text-[10px] font-mono-tabular text-zinc-300">
+                          {mpRooms.length} Public Lobbies · Host Public or Private Room
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundEngine.playUiChime(540);
+                        setMpError(null);
+                        setMpTab('create');
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-400 text-zinc-950 font-display font-bold text-[10px] uppercase tracking-wider cursor-pointer shrink-0"
+                    >
+                      + Create Room
+                    </button>
                   </div>
                 )}
               </div>
@@ -4021,7 +4085,7 @@ export function GameHUD({
               {(
                 [
                   { id: 'browse', label: 'Public Rooms' },
-                  { id: 'create', label: 'Create Room' },
+                  { id: 'create', label: '+ Create Room' },
                   { id: 'code', label: 'Join by Code' },
                 ] as const
               ).map((t) => (
@@ -4118,6 +4182,7 @@ export function GameHUD({
                                 onSelectMap(room.mapId);
                                 setShowMultiplayerModal(false);
                                 if (gameState !== 'playing') {
+                                  enterFullscreenIfMobile();
                                   onStartGame();
                                 }
                               }
@@ -4157,7 +4222,7 @@ export function GameHUD({
 
                   <div className="flex flex-col gap-1">
                     <label className="text-[10px] font-mono-tabular uppercase text-zinc-400">
-                      ROOM VISIBILITY
+                      ROOM VISIBILITY (NO AI BOTS IN PRIVATE ROOMS)
                     </label>
                     <div className="grid grid-cols-2 gap-1.5">
                       <button
@@ -4180,7 +4245,7 @@ export function GameHUD({
                             : 'bg-zinc-900 border-white/10 text-zinc-400'
                         }`}
                       >
-                        🔒 Private Room
+                        🔒 Private (No Bots)
                       </button>
                     </div>
                   </div>
@@ -4963,16 +5028,23 @@ export function GameHUD({
                           <button
                             type="button"
                             onClick={() => {
-                              soundEngine.playUiChime(520);
-                              handleToggleFullscreen();
+                              const nextFs = !gameSettings.fullscreen;
+                              onUpdateSettings?.({ fullscreen: nextFs });
+                              if (typeof document !== 'undefined') {
+                                if (nextFs && document.documentElement.requestFullscreen) {
+                                  document.documentElement.requestFullscreen().catch(() => {});
+                                } else if (!nextFs && document.fullscreenElement && document.exitFullscreen) {
+                                  document.exitFullscreen().catch(() => {});
+                                }
+                              }
                             }}
                             className={`px-3 py-1 rounded-lg text-xs font-mono-tabular font-bold uppercase cursor-pointer ${
-                              fsActive
+                              gameSettings.fullscreen
                                 ? 'bg-orange-500 text-neutral-950'
                                 : 'bg-neutral-800 text-neutral-200'
                             }`}
                           >
-                            {fsActive ? 'FULLSCREEN' : 'WINDOWED'}
+                            {gameSettings.fullscreen ? 'FULLSCREEN' : 'WINDOWED'}
                           </button>
                         </div>
 
@@ -6310,7 +6382,7 @@ export function GameHUD({
   // ---------------------------------------------------------------------------
   if (gameState === 'title') {
     return (
-      <div className="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between p-3 sm:p-6 md:p-10">
+      <div className="fixed inset-0 z-20 pointer-events-auto overflow-y-auto flex flex-col justify-between p-3 sm:p-6 md:p-10 gap-3">
         {/* Clean dark gradient on left third keeping 65% of the live 3D car & mountain viewport open */}
         <div
           className="fixed inset-0 pointer-events-none"
@@ -6320,9 +6392,9 @@ export function GameHUD({
           }}
         />
 
-        {/* Top Bar: Active Machine Summary & Primary Navigation Bar (Play, Garage, Customization, Multiplayer, Settings, Profile) */}
+        {/* Top Bar: Active Machine Summary & Primary Navigation Bar (Play, Garage, Customization, Multiplayer, Settings, Profile, Fullscreen) */}
         <div className="relative z-10 pointer-events-auto flex flex-wrap items-center justify-between gap-2 sm:gap-3">
-          <div className="flex items-center gap-3 bg-zinc-950/90 border border-white/10 rounded-xl px-3.5 py-2">
+          <div className="flex items-center gap-2.5 bg-zinc-950/90 border border-white/10 rounded-xl px-3 py-1.5 sm:py-2">
             <span
               className="w-3.5 h-3.5 rounded-full border border-white/30 shrink-0"
               style={{ backgroundColor: customization.paintColor }}
@@ -6339,20 +6411,18 @@ export function GameHUD({
           </div>
 
           <nav
-            className="flex flex-wrap items-center gap-1.5 bg-zinc-950/90 border border-white/10 rounded-xl p-1.5"
+            className="flex flex-wrap items-center gap-1 sm:gap-1.5 bg-zinc-950/90 border border-white/10 rounded-xl p-1 sm:p-1.5"
             aria-label="Main Menu Navigation"
           >
             <button
               type="button"
               onClick={() => {
                 soundEngine.playUiChime(640);
+                enterFullscreenIfMobile();
                 setIsTestDrive(false);
-                if (isMobileOrTouch() || gameSettings.fullscreen) {
-                  requestFullscreen().catch(() => {});
-                }
                 onStartGame();
               }}
-              className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
             >
               Play
             </button>
@@ -6360,10 +6430,11 @@ export function GameHUD({
               type="button"
               onClick={() => {
                 soundEngine.playUiChime(540);
+                enterFullscreenIfMobile();
                 setCustomTab('paint');
                 onOpenGarage();
               }}
-              className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-100 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-100 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
             >
               Garage ({VEHICLES_CATALOG.length})
             </button>
@@ -6371,11 +6442,13 @@ export function GameHUD({
               type="button"
               onClick={() => {
                 soundEngine.playUiChime(560);
+                enterFullscreenIfMobile();
                 setSheetUiExpanded(true);
                 setCustomTab('paint');
+                setMobileGarageTab('custom');
                 onOpenGarage();
               }}
-              className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-100 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-100 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
             >
               Customization
             </button>
@@ -6385,9 +6458,9 @@ export function GameHUD({
                 soundEngine.playUiChime(580);
                 setShowMultiplayerModal(true);
               }}
-              className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-orange-400 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-orange-400 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
             >
-              Multiplayer {mpConnectedRoom ? `(${mpConnectedRoom.playerCount})` : ''}
+              Multiplayer {mpConnectedRoom ? `(${1 + mpRemotePlayers.length})` : ''}
             </button>
             <button
               type="button"
@@ -6395,7 +6468,7 @@ export function GameHUD({
                 soundEngine.playUiChime(550);
                 setShowWorldMapModal(true);
               }}
-              className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-amber-300 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-amber-300 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
             >
               World Map
             </button>
@@ -6405,7 +6478,7 @@ export function GameHUD({
                 soundEngine.playUiChime(520);
                 setShowSettingsModal(true);
               }}
-              className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
             >
               Settings
             </button>
@@ -6415,28 +6488,24 @@ export function GameHUD({
                 soundEngine.playUiChime(520);
                 setShowProfileModal(true);
               }}
-              className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
             >
               Profile
             </button>
             <button
               type="button"
-              onClick={() => {
-                soundEngine.playUiChime(520);
-                handleToggleFullscreen();
-              }}
-              className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-amber-400 font-display font-bold text-xs uppercase tracking-wider cursor-pointer flex items-center gap-1.5"
-              title={fsActive ? 'Exit Fullscreen' : 'Fullscreen Mode (Hide Browser Header)'}
+              onClick={toggleFullscreen}
+              title="Full Screen (Hides Browser Header)"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/15 text-emerald-300 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
             >
-              <span>{fsActive ? '🗗' : '⛶'}</span>
-              <span>{fsActive ? 'Window' : 'Fullscreen'}</span>
+              {isFullscreen ? '⛶ Exit FS' : '⛶ Fullscreen'}
             </button>
           </nav>
         </div>
 
         {/* Left-Aligned Main Automotive Title & Configuration Stack */}
-        <div className="relative z-10 max-w-xl pointer-events-auto flex flex-col gap-2.5 sm:gap-4 my-auto max-h-[calc(100dvh-80px)] overflow-y-auto pr-1">
-          <div className="flex flex-col gap-1 sm:gap-1.5">
+        <div className="relative z-10 max-w-xl pointer-events-auto flex flex-col gap-3 sm:gap-4 my-auto">
+          <div className="flex flex-col gap-1">
             <div className="text-[10px] sm:text-xs font-mono-tabular uppercase tracking-widest text-amber-400">
               MOUNTAIN TOUGE &amp; TANDEM DRIFT SIMULATOR
             </div>
@@ -6444,12 +6513,12 @@ export function GameHUD({
               TOUGE &amp; SAKURA <span className="text-amber-400">DRIFT 3D</span>
             </h1>
             <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed max-w-md hidden sm:block">
-               Precision RWD/AWD weight-transfer drift physics, {VEHICLES_CATALOG.length} customizable JDM &amp; exotic machines, and live online tandem lobbies.
+              Precision RWD/AWD weight-transfer drift physics, {VEHICLES_CATALOG.length} customizable JDM &amp; exotic machines, and live online tandem lobbies.
             </p>
           </div>
 
           {/* Driving Mode Selection: DRIFT MODE vs RACE MODE */}
-          <div className="grid grid-cols-2 gap-2 sm:gap-2.5" role="group" aria-label="Select Driving Mode">
+          <div className="grid grid-cols-2 gap-2" role="group" aria-label="Select Driving Mode">
             {(
               [
                 {
@@ -6478,32 +6547,32 @@ export function GameHUD({
                     soundEngine.playUiChime(560);
                     onUpdateSettings?.({ handlingMode: modeCard.id });
                   }}
-                  className={`text-left p-3 rounded-xl border transition-colors cursor-pointer ${
+                  className={`text-left p-2.5 sm:p-3 rounded-xl border transition-colors cursor-pointer ${
                     isSelected
                       ? 'bg-zinc-900/95 border-amber-400'
                       : 'bg-zinc-950/85 border-white/10 hover:border-white/25'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-display font-bold text-zinc-100 tracking-wide">
+                    <span className="text-xs sm:text-sm font-display font-bold text-zinc-100 tracking-wide">
                       {modeCard.title}
                     </span>
                     <span
-                      className={`text-[10px] font-mono-tabular font-bold px-1.5 py-0.5 rounded ${
+                      className={`text-[9px] sm:text-[10px] font-mono-tabular font-bold px-1.5 py-0.5 rounded ${
                         isSelected ? 'bg-amber-500 text-zinc-950' : 'bg-zinc-800 text-zinc-400'
                       }`}
                     >
                       {modeCard.badge}
                     </span>
                   </div>
-                  <div className="text-[11px] text-zinc-400 mt-1 line-clamp-2">{modeCard.desc}</div>
+                  <div className="text-[11px] text-zinc-400 mt-1 line-clamp-2 hidden sm:block">{modeCard.desc}</div>
                 </button>
               );
             })}
           </div>
 
           {/* Environment Selection Cards (Map 1: Mountain Drift vs Map 2: Blossom Drift) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5" role="group" aria-label="Select Drifting Map">
+          <div className="grid grid-cols-2 gap-2" role="group" aria-label="Select Drifting Map">
             {(['mountain', 'blossom'] as MapId[]).map((id) => {
               const m = MAPS_DATA[id];
               const active = mapId === id;
@@ -6515,34 +6584,34 @@ export function GameHUD({
                     soundEngine.playUiChime(id === 'mountain' ? 480 : 620);
                     onSelectMap(id);
                   }}
-                  className={`text-left p-3 rounded-xl border transition-colors cursor-pointer ${
+                  className={`text-left p-2.5 sm:p-3 rounded-xl border transition-colors cursor-pointer ${
                     active
                       ? 'bg-zinc-900/95 border-white/40'
                       : 'bg-zinc-950/85 border-white/10 hover:border-white/25'
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-2 mb-0.5">
-                    <span className="text-xs font-mono-tabular text-zinc-400">
+                  <div className="flex items-center justify-between gap-1 mb-0.5">
+                    <span className="text-[10px] sm:text-xs font-mono-tabular text-zinc-400 truncate">
                       {m.japaneseTitle} · {m.totalLengthKm}
                     </span>
                     <span
-                      className={`text-[11px] font-mono-tabular font-bold ${
+                      className={`text-[10px] sm:text-[11px] font-mono-tabular font-bold ${
                         active ? 'text-amber-400' : 'text-zinc-500'
                       }`}
                     >
                       {active ? 'SELECTED' : 'SELECT'}
                     </span>
                   </div>
-                  <div className="text-base font-display font-bold text-zinc-100">{m.name}</div>
+                  <div className="text-sm sm:text-base font-display font-bold text-zinc-100">{m.name}</div>
                 </button>
               );
             })}
           </div>
 
           {/* Compact Lighting, Weather & Graphics Bar */}
-          <div className="flex flex-col gap-2 bg-zinc-950/90 border border-white/10 rounded-xl p-3">
+          <div className="flex flex-col gap-2 bg-zinc-950/90 border border-white/10 rounded-xl p-2.5 sm:p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-[11px] font-mono-tabular uppercase text-zinc-400">
+              <span className="text-[10px] sm:text-[11px] font-mono-tabular uppercase text-zinc-400">
                 TIME OF DAY:
               </span>
               <div className="flex flex-wrap items-center gap-1">
@@ -6566,7 +6635,7 @@ export function GameHUD({
                         if (onSelectTimeOfDay) onSelectTimeOfDay(t.id);
                         else onToggleTimeOfDay();
                       }}
-                      className={`px-2 py-1 text-[11px] font-medium rounded-md cursor-pointer ${
+                      className={`px-2 py-0.5 sm:py-1 text-[10px] sm:text-[11px] font-medium rounded-md cursor-pointer ${
                         active
                           ? 'bg-amber-500 text-zinc-950 font-semibold'
                           : 'bg-zinc-900 text-zinc-300 hover:text-white'
@@ -6597,7 +6666,7 @@ export function GameHUD({
                       soundEngine.playUiChime(510);
                       onUpdateSettings?.({ weather: w.id });
                     }}
-                    className={`px-2 py-0.5 text-[11px] font-medium rounded-md cursor-pointer ${
+                    className={`px-2 py-0.5 text-[10px] sm:text-[11px] font-medium rounded-md cursor-pointer ${
                       (gameSettings.weather ?? 'clear') === w.id
                         ? 'bg-orange-500 text-zinc-950 font-semibold'
                         : 'bg-zinc-900 text-zinc-300 hover:text-white'
@@ -6617,7 +6686,7 @@ export function GameHUD({
                       soundEngine.playUiChime(540);
                       onSelectGraphicsPreset(preset);
                     }}
-                    className={`px-2 py-0.5 text-[11px] font-mono-tabular uppercase rounded-md cursor-pointer ${
+                    className={`px-2 py-0.5 text-[10px] sm:text-[11px] font-mono-tabular uppercase rounded-md cursor-pointer ${
                       graphicsPreset === preset
                         ? 'bg-amber-500/25 border border-amber-400 text-amber-300 font-semibold'
                         : 'bg-zinc-900 text-zinc-400 hover:text-white'
@@ -6631,34 +6700,30 @@ export function GameHUD({
           </div>
 
           {/* Primary Action Row */}
-          <div className="flex flex-wrap items-center gap-2 pt-1 shrink-0">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               data-start="true"
-              disabled={isStartingGame}
               onClick={(e) => {
                 e.currentTarget.blur();
                 soundEngine.playUiChime(640);
+                enterFullscreenIfMobile();
                 setIsTestDrive(false);
-                if (isMobileOrTouch() || gameSettings.fullscreen) {
-                  requestFullscreen().catch(() => {});
-                }
                 onStartGame();
               }}
-              className="px-4 sm:px-6 py-2.5 sm:py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-display font-bold text-xs sm:text-base tracking-wider uppercase cursor-pointer disabled:opacity-75 disabled:cursor-wait"
+              className="px-5 sm:px-6 py-2.5 sm:py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-display font-bold text-sm sm:text-base tracking-wider uppercase cursor-pointer"
             >
-              {isStartingGame
-                ? '🏎️ Starting Engine...'
-                : `Start ${(gameSettings.handlingMode ?? 'drift') === 'drift' ? 'Drifting' : 'Racing'} — ${mapDef.name}`}
+              Start {(gameSettings.handlingMode ?? 'drift') === 'drift' ? 'Drifting' : 'Racing'} — {mapDef.name}
             </button>
 
             <button
               type="button"
               onClick={() => {
                 soundEngine.playUiChime(540);
+                enterFullscreenIfMobile();
                 onOpenGarage();
               }}
-              className="px-3 sm:px-4 py-2 sm:py-3 rounded-xl bg-zinc-900/95 hover:bg-zinc-800 border border-white/15 text-zinc-100 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="px-3.5 sm:px-4 py-2.5 sm:py-3 rounded-xl bg-zinc-900/95 hover:bg-zinc-800 border border-white/15 text-zinc-100 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
             >
               3D Garage &amp; Tuning [G]
             </button>
@@ -6669,14 +6734,14 @@ export function GameHUD({
                 soundEngine.playUiChime(580);
                 setShowMultiplayerModal(true);
               }}
-              className="px-3 sm:px-4 py-2 sm:py-3 rounded-xl bg-zinc-900/95 hover:bg-zinc-800 border border-white/15 text-zinc-100 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="px-3.5 sm:px-4 py-2.5 sm:py-3 rounded-xl bg-zinc-900/95 hover:bg-zinc-800 border border-white/15 text-zinc-100 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
             >
               Online Multiplayer
             </button>
           </div>
         </div>
 
-        <div className="relative z-10 text-xs text-zinc-400 font-mono-tabular tracking-wide hidden sm:block">
+        <div className="relative z-10 text-[11px] sm:text-xs text-zinc-400 font-mono-tabular tracking-wide hidden sm:block">
           WASD / Arrows Drive &nbsp;·&nbsp; Space Handbrake &nbsp;·&nbsp; Shift N2O &nbsp;·&nbsp; V Drift/Race &nbsp;·&nbsp; G Garage &nbsp;·&nbsp; C Camera
         </div>
 
@@ -6696,37 +6761,39 @@ export function GameHUD({
   const hudPanelOpacity = Math.max(0.35, Math.min(1.0, gameSettings.hudOpacity ?? 0.9));
 
   return (
-    <div className="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between p-3 md:p-5">
-      {/* SYNCHRONIZED MULTIPLAYER RACE 3-2-1-GO! COUNTDOWN BANNER */}
+    <div className="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between p-2 sm:p-3 md:p-5">
+      {/* RACE 3-2-1-GO! COUNTDOWN BANNER (Auto-clears 1.1s after GO!) */}
       {raceCountdownLabel && !photoModeState.active && !replayState.active && (
-        <div className="fixed inset-x-0 top-24 z-40 pointer-events-none flex justify-center">
-          <div className="px-8 py-3 rounded-2xl bg-neutral-950/95 border-2 border-amber-400 shadow-2xl flex flex-col items-center">
-            <span className="text-[10px] font-mono-tabular uppercase tracking-widest text-amber-300">
-              SYNCHRONIZED MULTIPLAYER RACE START
+        <div className="fixed inset-x-0 top-16 sm:top-20 z-40 pointer-events-none flex justify-center">
+          <div className="px-6 py-2 rounded-2xl bg-neutral-950/92 border-2 border-amber-400 shadow-2xl flex flex-col items-center">
+            <span className="text-[9px] font-mono-tabular uppercase tracking-widest text-amber-300">
+              {mpConnectedRoom ? 'SYNCHRONIZED MULTIPLAYER RACE' : 'RACE START'}
             </span>
-            <span className="text-4xl md:text-5xl font-mono-tabular tabular-nums font-extrabold text-white tracking-wider">
+            <span className="text-3xl sm:text-4xl font-mono-tabular tabular-nums font-extrabold text-white tracking-wider">
               {raceCountdownLabel}
             </span>
           </div>
         </div>
       )}
 
-      {/* MOBILE PORTRAIT ORIENTATION BANNER (Prompts Landscape Mode on narrow vertical phones) */}
-      {isPortraitMobile && !photoModeState.active && !replayState.active && (
-        <div className="pointer-events-auto mx-auto mb-2 px-3.5 py-1.5 rounded-xl bg-neutral-950/95 border border-orange-500/50 text-[11px] font-mono-tabular text-neutral-200 flex flex-wrap items-center justify-between gap-2 shadow-xl">
-          <div className="flex items-center gap-2">
-            <span className="text-orange-400 font-bold">↻ LANDSCAPE RECOMMENDED</span>
-            <span className="text-neutral-400">Rotate device horizontally for racing controls</span>
-          </div>
-          {!fsActive && (
-            <button
-              type="button"
-              onClick={() => handleToggleFullscreen()}
-              className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold uppercase text-[10px] cursor-pointer"
-            >
-              ⛶ Go Fullscreen
-            </button>
-          )}
+      {/* MOBILE PORTRAIT ORIENTATION & FULLSCREEN BANNER (Dismissible + Tappable for Fullscreen) */}
+      {isPortraitMobile && !portraitBannerDismissed && !photoModeState.active && !replayState.active && (
+        <div className="pointer-events-auto mx-auto mb-1.5 px-3 py-1 rounded-xl bg-neutral-950/95 border border-orange-500/50 text-[10px] font-mono-tabular text-neutral-200 flex items-center gap-2 shadow-xl">
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            className="text-orange-400 font-bold cursor-pointer hover:underline"
+          >
+            ⛶ TAP FOR FULLSCREEN &amp; ROTATE LANDSCAPE
+          </button>
+          <button
+            type="button"
+            onClick={() => setPortraitBannerDismissed(true)}
+            aria-label="Dismiss Orientation Tip"
+            className="px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-300 hover:text-white cursor-pointer"
+          >
+            ✕
+          </button>
         </div>
       )}
 
@@ -6736,11 +6803,11 @@ export function GameHUD({
         className={
           photoModeState.active || replayState.active
             ? 'hidden'
-            : 'flex items-start justify-between gap-3 w-full'
+            : 'flex items-start justify-between gap-2 sm:gap-3 w-full'
         }
       >
         {/* TOP-LEFT: Circular Navigation Minimap + Compact Session & Action Controls */}
-        <div className="pointer-events-auto flex items-start gap-2.5">
+        <div className="pointer-events-auto flex items-start gap-1.5 sm:gap-2.5 min-w-0">
           {!hudCollapsed && (
             <div
               onClick={() => {
@@ -6748,7 +6815,7 @@ export function GameHUD({
                 setShowWorldMapModal(true);
               }}
               title="Click Minimap to Open Full World Map & Fast Travel"
-              className="relative w-28 h-28 sm:w-32 sm:h-32 md:w-36 md:h-36 rounded-full bg-neutral-950/90 border-2 border-white/15 hover:border-amber-400/60 shadow-2xl overflow-hidden shrink-0 cursor-pointer"
+              className="relative w-20 h-20 sm:w-24 sm:h-24 lg:w-36 lg:h-36 rounded-full bg-neutral-950/90 border-2 border-white/15 hover:border-amber-400/60 shadow-2xl overflow-hidden shrink-0 cursor-pointer"
             >
               <svg
                 viewBox="0 0 180 180"
@@ -6856,16 +6923,16 @@ export function GameHUD({
               </svg>
 
               {/* Cardinal North Badge */}
-              <span className="absolute top-1.5 left-1/2 -translate-x-1/2 px-1.5 py-0.2 rounded bg-neutral-950/90 border border-white/15 text-[9px] font-mono-tabular font-bold text-neutral-300">
+              <span className="absolute top-1 left-1/2 -translate-x-1/2 px-1 py-0.2 rounded bg-neutral-950/90 border border-white/15 text-[8px] font-mono-tabular font-bold text-neutral-300">
                 N
               </span>
             </div>
           )}
 
           {/* Subtle Session & Utility Stack Beside Minimap */}
-          <div className="flex flex-col gap-1.5">
-            {/* Compact Top Action Bar (Pause, Reset, Camera, Garage, World Map, Settings) */}
-            <div className="flex flex-nowrap items-center gap-1 bg-neutral-950/88 border border-white/15 rounded-xl p-1 shadow-lg max-w-[calc(100vw-150px)] sm:max-w-none overflow-x-auto">
+          <div className="flex flex-col gap-1 min-w-0">
+            {/* Compact Top Action Bar (Pause, Reset, Camera, Garage, World Map, Multiplayer, Fullscreen, Settings, Mute) */}
+            <div className="flex flex-wrap items-center gap-1 bg-neutral-950/88 border border-white/15 rounded-xl p-1 shadow-lg max-w-[58vw] sm:max-w-none">
               <button
                 type="button"
                 tabIndex={-1}
@@ -6906,9 +6973,9 @@ export function GameHUD({
                   soundEngine.playUiChime(520);
                   onCycleCamera();
                 }}
-                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[11px] font-mono-tabular uppercase text-neutral-200 cursor-pointer whitespace-nowrap shrink-0"
+                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[10px] sm:text-[11px] font-mono-tabular uppercase text-neutral-200 cursor-pointer whitespace-nowrap shrink-0"
               >
-                {cameraMode} [C]
+                {cameraMode}
               </button>
 
               <button
@@ -6919,9 +6986,9 @@ export function GameHUD({
                   soundEngine.playUiChime(540);
                   onOpenGarage();
                 }}
-                className="px-2.5 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/15 text-[11px] font-display font-bold tracking-wide text-neutral-100 cursor-pointer whitespace-nowrap shrink-0"
+                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/15 text-[10px] sm:text-[11px] font-display font-bold tracking-wide text-neutral-100 cursor-pointer whitespace-nowrap shrink-0"
               >
-                {isTestDrive ? '← Tune Garage' : 'Garage [G]'}
+                {isTestDrive ? '← Garage' : 'Garage'}
               </button>
 
               <button
@@ -6934,9 +7001,60 @@ export function GameHUD({
                   soundEngine.playUiChime(550);
                   setShowWorldMapModal(true);
                 }}
-                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[11px] font-mono-tabular text-amber-300 hover:text-amber-200 cursor-pointer whitespace-nowrap shrink-0"
+                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[10px] sm:text-[11px] font-mono-tabular text-amber-300 hover:text-amber-200 cursor-pointer whitespace-nowrap shrink-0"
               >
                 🗺 Map
+              </button>
+
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-label="Open Online Multiplayer"
+                title="Online Multiplayer Lobby"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  soundEngine.playUiChime(580);
+                  setShowMultiplayerModal(true);
+                }}
+                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[10px] sm:text-[11px] font-mono-tabular text-orange-400 hover:text-orange-300 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                {mpConnectedRoom ? `🌐 #${mpConnectedRoom.inviteCode}` : '🌐 Online'}
+              </button>
+
+              {mpConnectedRoom && (mpConnectedRoom.raceStatus === 'lobby' || mpConnectedRoom.raceStatus === 'finished') && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-label="Start Match Race"
+                  title="Start Match (3-2-1-GO!)"
+                  onClick={async (e) => {
+                    e.currentTarget.blur();
+                    soundEngine.playUiChime(620);
+                    setShowMatchEndStats(false);
+                    await multiplayerClient.startRace({ totalLaps: mpConnectedRoom.totalLaps || 2 });
+                  }}
+                  className="px-2 h-7 rounded-lg bg-amber-500 hover:bg-amber-400 text-neutral-950 font-display font-bold text-[10px] sm:text-[11px] uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  🏁 Start Match
+                </button>
+              )}
+
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-label="Finish Match and View Stats"
+                title="End Run / View Match Stats Summary"
+                onClick={async (e) => {
+                  e.currentTarget.blur();
+                  soundEngine.playUiChime(560);
+                  if (mpConnectedRoom && (mpConnectedRoom.raceStatus === 'active' || mpConnectedRoom.raceStatus === 'countdown')) {
+                    await multiplayerClient.resetRace();
+                  }
+                  openPostMatchStats();
+                }}
+                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-emerald-500/40 text-[10px] sm:text-[11px] font-mono-tabular text-emerald-300 hover:text-emerald-200 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                🏁 Finish
               </button>
 
               <button
@@ -6947,7 +7065,7 @@ export function GameHUD({
                   soundEngine.playUiChime(480);
                   onSelectMap(mapId === 'mountain' ? 'blossom' : 'mountain');
                 }}
-                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[11px] font-mono-tabular text-neutral-300 hover:text-white cursor-pointer whitespace-nowrap inline-flex items-center shrink-0"
+                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[11px] font-mono-tabular text-neutral-300 hover:text-white cursor-pointer whitespace-nowrap hidden xl:inline-flex items-center shrink-0"
                 title="Switch Mountain Map"
               >
                 {mapId === 'mountain' ? 'Mt. Haruna' : 'Sakura Pass'}
@@ -6963,13 +7081,27 @@ export function GameHUD({
                   soundEngine.playUiChime(480);
                   onToggleTimeOfDay();
                 }}
-                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[11px] font-mono-tabular capitalize text-neutral-300 cursor-pointer whitespace-nowrap inline-flex items-center shrink-0"
+                className="px-2 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[11px] font-mono-tabular capitalize text-neutral-300 cursor-pointer whitespace-nowrap hidden xl:inline-flex items-center shrink-0"
               >
                 {timeOfDay === 'day'
                   ? 'Afternoon'
                   : timeOfDay === 'golden_hour'
                     ? 'Golden'
                     : timeOfDay}
+              </button>
+
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-label="Toggle Fullscreen"
+                title="Full Screen"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  toggleFullscreen();
+                }}
+                className="w-7 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-emerald-300 flex items-center justify-center text-xs cursor-pointer shrink-0"
+              >
+                ⛶
               </button>
 
               <button
@@ -7000,25 +7132,10 @@ export function GameHUD({
               >
                 {isMuted ? '🔇' : '🔊'}
               </button>
-
-              <button
-                type="button"
-                tabIndex={-1}
-                aria-label={fsActive ? 'Exit Fullscreen' : 'Enter Fullscreen'}
-                title={fsActive ? 'Exit Fullscreen' : 'Fullscreen Mode (Hide Browser Header)'}
-                onClick={(e) => {
-                  e.currentTarget.blur();
-                  soundEngine.playUiChime(520);
-                  handleToggleFullscreen();
-                }}
-                className="w-7 h-7 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-neutral-200 flex items-center justify-center text-xs cursor-pointer shrink-0"
-              >
-                {fsActive ? '🗗' : '⛶'}
-              </button>
             </div>
 
-            {/* Subtle Sector & Surface Strip (Only shows Lap/Timer when in Race Mode) */}
-            {!hudCollapsed && (
+            {/* Subtle Sector & Surface Strip (Desktop Only — Keeps Mobile Windshield Clean) */}
+            {!hudCollapsed && effectiveControlScheme === 'pc' && (
               <div className="hidden lg:flex flex-nowrap items-center gap-2 bg-neutral-950/85 border border-white/12 rounded-xl px-2.5 py-1 text-[11px] font-mono-tabular tabular-nums text-neutral-300">
                 <span ref={zoneNameTextRef} className="font-semibold text-neutral-100">
                   {mapDef.viewpoints[activeViewpointIdx]?.name.replace(/^\d+\.\s*/, '')}
@@ -7042,10 +7159,10 @@ export function GameHUD({
               </div>
             )}
 
-            {/* Sector Quick-Jump Pills + Secondary Utility Triggers */}
-            {!hudCollapsed && (
+            {/* Desktop Sector Quick-Jump Pills + Secondary Utility Triggers */}
+            {!hudCollapsed && effectiveControlScheme === 'pc' && (
               <div
-                className="flex flex-nowrap sm:flex-wrap items-center gap-1 bg-neutral-950/82 border border-white/10 rounded-xl p-1 max-w-[calc(100vw-150px)] sm:max-w-none overflow-x-auto"
+                className="hidden lg:flex flex-wrap items-center gap-1 bg-neutral-950/82 border border-white/10 rounded-xl p-1"
                 role="group"
                 aria-label="Map Viewpoints"
               >
@@ -7163,11 +7280,12 @@ export function GameHUD({
           </div>
         </div>
 
-        {/* TOP-CENTER: Clean, Restrained Automotive Drift Score Readout */}
+        {/* TOP-CENTER: Clean, Restrained Automotive Drift Score Readout (Desktop Only — Mobile Shows Stats at Match End) */}
         {!hudCollapsed && (
-          <div className="flex flex-col items-center gap-1 pointer-events-none shrink-0 scale-75 sm:scale-90 lg:scale-100">
+          <div className="hidden lg:flex flex-col items-center gap-1 pointer-events-none shrink-0">
             <div
               ref={driftBannerRef}
+              style={{ opacity: 0.32 }}
               className="flex items-center gap-2 lg:gap-3 bg-neutral-950/88 border border-white/15 rounded-xl px-2.5 lg:px-3.5 py-1 lg:py-1.5 transition-opacity font-mono-tabular tabular-nums"
             >
               <div>
@@ -7179,7 +7297,7 @@ export function GameHUD({
                     ref={driftPointsTextRef}
                     className="text-xs lg:text-base font-mono-tabular tabular-nums font-bold text-orange-400"
                   >
-                    READY
+                    0 PTS
                   </span>
                   <span
                     ref={driftMultTextRef}
@@ -7227,9 +7345,7 @@ export function GameHUD({
               <span
                 ref={driftNotificationTextRef}
                 className="text-[10px] font-mono-tabular font-bold tracking-wider uppercase text-orange-400"
-              >
-                READY
-              </span>
+              />
             </div>
           </div>
         )}
@@ -7325,8 +7441,8 @@ export function GameHUD({
               </div>
             </div>
 
-            {/* Circular Tachometer + Digital Speedometer Dial (Reference Top-Right Cluster) */}
-            <div className="relative w-28 h-28 sm:w-32 sm:h-32 lg:w-40 lg:h-40 rounded-full bg-neutral-950/92 border-2 border-white/15 shadow-2xl flex items-center justify-center shrink-0">
+            {/* Circular Tachometer + Digital Speedometer Dial (Compact on Mobile so Windshield Stays Open) */}
+            <div className="relative w-24 h-24 sm:w-28 sm:h-28 lg:w-40 lg:h-40 rounded-full bg-neutral-950/92 border-2 border-white/15 shadow-2xl flex items-center justify-center shrink-0">
               <svg
                 viewBox="0 0 160 160"
                 className="w-full h-full font-mono-tabular tabular-nums"
@@ -7510,160 +7626,146 @@ export function GameHUD({
         )}
       </div>
 
-      {/* LEFT PERIMETER OVERLAYS: LIVE MULTIPLAYER LEADERBOARD, TANDEM TELEMETRY, VEHICLE TELEMETRY & DRIFT PRACTICE */}
+      {/* LEFT PERIMETER OVERLAYS (Desktop Only so Mobile Windshield & Middle Screen Stay 100% Unobstructed During Matches) */}
       <div
         style={{ opacity: hudPanelOpacity }}
-        className="pointer-events-none flex flex-col items-start justify-center my-auto gap-2.5 relative"
+        className="hidden lg:flex pointer-events-none flex-col items-start justify-center my-auto gap-2 relative"
       >
         {/* Live Multiplayer Room Leaderboard, Race Controls & Tandem Proximity Sync */}
         {mpConnectedRoom && !hudCollapsed && !photoModeState.active && !replayState.active && (
-          !mpLeaderboardExpanded ? (
-            /* Minimal non-distracting pill for mobile driving */
-            <div className="pointer-events-auto bg-neutral-950/85 backdrop-blur-sm border border-white/15 rounded-lg px-2.5 py-1.5 flex items-center gap-2 text-[10px] font-mono-tabular shadow-lg">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-              <div className="flex flex-col">
-                <span className="text-[10px] text-neutral-200 font-bold truncate max-w-[110px]">
-                  {mpConnectedRoom.name}
+          <div className="pointer-events-auto bg-neutral-950/92 border border-white/15 rounded-xl p-3 w-68 flex flex-col gap-2 font-mono-tabular tabular-nums">
+            <div className="flex items-center justify-between border-b border-white/10 pb-1">
+              <div className="flex flex-col min-w-0">
+                <span className="text-[10px] uppercase text-neutral-200 font-bold truncate max-w-[135px] sm:max-w-[165px]">
+                  ● {mpConnectedRoom.name}
                 </span>
-                <span className="text-[8px] text-neutral-400">
-                  {mpConnectedRoom.raceStatus === 'active' ? '🏁 RACING' : 'LOBBY'} · {1 + mpRemotePlayers.length}P
+                <span className="text-[9px] uppercase text-neutral-400">
+                  {mpConnectedRoom.isPrivate ? '🔒 PRIVATE · ' : ''}
+                  {mpConnectedRoom.raceStatus === 'active'
+                    ? `RACING (${mpConnectedRoom.totalLaps} LAPS)`
+                    : mpConnectedRoom.raceStatus === 'countdown'
+                      ? 'COUNTDOWN...'
+                      : mpConnectedRoom.raceStatus === 'finished'
+                        ? 'RACE FINISHED'
+                        : 'FREE ROAM / LOBBY'}
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => setMpLeaderboardExpanded(true)}
-                className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-orange-400 font-bold text-[9px] uppercase tracking-wide cursor-pointer transition-colors"
-                title="Expand Leaderboard & Race Controls"
-              >
-                Stats ▾
-              </button>
+              <div className="flex items-center gap-1 shrink-0">
+                <span className="text-[10px] text-orange-400 font-bold">
+                  #{mpConnectedRoom.inviteCode}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setMpHudMinimized((prev) => !prev)}
+                  className="px-1.5 py-0.5 rounded bg-neutral-800 text-[9px] text-neutral-300 hover:text-white cursor-pointer"
+                  title="Minimize / Expand Room Panel"
+                >
+                  {mpHudMinimized ? '▾' : '▴'}
+                </button>
+              </div>
             </div>
-          ) : (
-            <div className="pointer-events-auto bg-neutral-950/92 border border-white/15 rounded-xl p-2.5 sm:p-3 w-56 sm:w-68 max-h-[70vh] overflow-y-auto flex flex-col gap-2 font-mono-tabular tabular-nums shadow-2xl">
-              <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
-                <div className="flex flex-col">
-                  <span className="text-[10px] uppercase text-neutral-200 font-bold truncate max-w-[130px]">
-                    ● {mpConnectedRoom.name}
-                  </span>
-                  <span className="text-[9px] uppercase text-neutral-400">
-                    {mpConnectedRoom.mode.replace('_', ' ')} ·{' '}
-                    {mpConnectedRoom.raceStatus === 'active'
-                      ? `RACING (${mpConnectedRoom.totalLaps} LAPS)`
-                      : mpConnectedRoom.raceStatus === 'countdown'
-                        ? 'COUNTDOWN...'
-                        : mpConnectedRoom.raceStatus === 'finished'
-                          ? 'RACE FINISHED'
-                          : 'FREE ROAM / LOBBY'}
-                  </span>
+
+            {!mpHudMinimized && (
+              <>
+                {/* Standings List */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between text-xs text-neutral-100">
+                    <span className="truncate">
+                      ★ {mpPlayerName} <span className="text-[10px] text-neutral-400">({selectedVehicle.chassisCode})</span>
+                    </span>
+                    <span className="text-orange-400 font-bold">
+                      {Math.round(
+                        (latestCarRef.current?.totalDriftScore ?? 0) +
+                          (latestCarRef.current?.currentDriftPoints ?? 0)
+                      ).toLocaleString()}{' '}
+                      PTS
+                    </span>
+                  </div>
+                  {mpRemotePlayers.map((rp) => {
+                    const vSpec = getVehicleById(rp.vehicleId);
+                    return (
+                      <div
+                        key={rp.playerId}
+                        className="flex items-center justify-between text-xs text-neutral-300"
+                      >
+                        <span className="truncate flex items-center gap-1.5">
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: rp.paintColor || '#f97316' }}
+                          />
+                          <span>{rp.playerName}</span>
+                          <span className="text-[10px] text-neutral-500">({vSpec.chassisCode})</span>
+                        </span>
+                        <span className="text-neutral-200 font-semibold">
+                          {Math.round(rp.driftScore + rp.currentDriftPoints).toLocaleString()} PTS
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-orange-400 font-bold">
-                    #{mpConnectedRoom.inviteCode}
-                  </span>
+
+                {/* Live Tandem Drift Proximity & Angle Sync Telemetry Box */}
+                {tandemTelemetry && tandemTelemetry.partnerName && (
+                  <div className="bg-neutral-900/95 border border-orange-500/40 rounded-lg p-2 flex flex-col gap-1">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="text-orange-400 font-extrabold uppercase">
+                        ⚡ {tandemTelemetry.role} TANDEM · {tandemTelemetry.partnerName}
+                      </span>
+                      <span className="px-1.5 py-0.2 rounded bg-orange-500 text-neutral-950 font-extrabold text-[9px]">
+                        {tandemTelemetry.tandemMultiplierBonus.toFixed(2)}x
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1 text-[10px]">
+                      <div>
+                        <div className="text-[8px] text-neutral-400">PROXIMITY</div>
+                        <div className="font-bold text-neutral-100">{tandemTelemetry.distanceMeters}m</div>
+                      </div>
+                      <div>
+                        <div className="text-[8px] text-neutral-400">ANGLE SYNC</div>
+                        <div className="font-bold text-orange-300">{tandemTelemetry.angleSyncPct}%</div>
+                      </div>
+                      <div>
+                        <div className="text-[8px] text-neutral-400">SPEED SYNC</div>
+                        <div className="font-bold text-emerald-300">{tandemTelemetry.speedSyncPct}%</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Synchronized Multiplayer Race Start / Reset + On-the-Fly Car Switcher */}
+            <div className="flex flex-col gap-1.5 pt-1 border-t border-white/10">
+              <div className="flex items-center gap-1.5">
+                {mpConnectedRoom.raceStatus === 'lobby' || mpConnectedRoom.raceStatus === 'finished' ? (
                   <button
                     type="button"
-                    onClick={() => setMpLeaderboardExpanded(false)}
-                    className="p-1 rounded bg-white/10 hover:bg-white/20 text-neutral-300 hover:text-white text-[10px] leading-none cursor-pointer"
-                    title="Minimize Standings"
+                    onClick={async () => {
+                      soundEngine.playUiChime(620);
+                      if (typeof window !== 'undefined' && window.innerWidth <= 960) {
+                        setMpHudMinimized(true);
+                      }
+                      await multiplayerClient.startRace({ totalLaps: mpConnectedRoom.totalLaps || 2 });
+                    }}
+                    className="flex-1 py-1.5 px-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-neutral-950 font-display font-bold text-[10px] uppercase tracking-wider cursor-pointer"
                   >
-                    ▴
+                    🏁 Start Race (3-2-1-GO!)
                   </button>
-                </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      soundEngine.playUiChime(460);
+                      await multiplayerClient.resetRace();
+                    }}
+                    className="flex-1 py-1.5 px-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-mono-tabular font-bold text-[10px] uppercase cursor-pointer"
+                  >
+                    ↺ Reset to Free Roam
+                  </button>
+                )}
               </div>
 
-              {/* Standings List */}
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between text-xs text-neutral-100">
-                  <span className="truncate">
-                    ★ {mpPlayerName} <span className="text-[10px] text-neutral-400">({selectedVehicle.chassisCode})</span>
-                  </span>
-                  <span className="text-orange-400 font-bold">
-                    {Math.round(
-                      (latestCarRef.current?.totalDriftScore ?? 0) +
-                        (latestCarRef.current?.currentDriftPoints ?? 0)
-                    ).toLocaleString()}{' '}
-                    PTS
-                  </span>
-                </div>
-                {mpRemotePlayers.map((rp) => {
-                  const vSpec = getVehicleById(rp.vehicleId);
-                  return (
-                    <div
-                      key={rp.playerId}
-                      className="flex items-center justify-between text-xs text-neutral-300"
-                    >
-                      <span className="truncate flex items-center gap-1.5">
-                        <span
-                          className="w-2 h-2 rounded-full shrink-0"
-                          style={{ backgroundColor: rp.paintColor || '#f97316' }}
-                        />
-                        <span>{rp.playerName}</span>
-                        <span className="text-[10px] text-neutral-500">({vSpec.chassisCode})</span>
-                      </span>
-                      <span className="text-neutral-200 font-semibold">
-                        {Math.round(rp.driftScore + rp.currentDriftPoints).toLocaleString()} PTS
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Live Tandem Drift Proximity & Angle Sync Telemetry Box */}
-              {tandemTelemetry && tandemTelemetry.partnerName && (
-                <div className="bg-neutral-900/95 border border-orange-500/40 rounded-lg p-2 flex flex-col gap-1">
-                  <div className="flex items-center justify-between text-[10px]">
-                    <span className="text-orange-400 font-extrabold uppercase">
-                      ⚡ {tandemTelemetry.role} TANDEM · {tandemTelemetry.partnerName}
-                    </span>
-                    <span className="px-1.5 py-0.2 rounded bg-orange-500 text-neutral-950 font-extrabold text-[9px]">
-                      {tandemTelemetry.tandemMultiplierBonus.toFixed(2)}x
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-1 text-[10px]">
-                    <div>
-                      <div className="text-[8px] text-neutral-400">PROXIMITY</div>
-                      <div className="font-bold text-neutral-100">{tandemTelemetry.distanceMeters}m</div>
-                    </div>
-                    <div>
-                      <div className="text-[8px] text-neutral-400">ANGLE SYNC</div>
-                      <div className="font-bold text-orange-300">{tandemTelemetry.angleSyncPct}%</div>
-                    </div>
-                    <div>
-                      <div className="text-[8px] text-neutral-400">SPEED SYNC</div>
-                      <div className="font-bold text-emerald-300">{tandemTelemetry.speedSyncPct}%</div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Synchronized Multiplayer Race Start / Reset + On-the-Fly Car Switcher */}
-              <div className="flex flex-col gap-1.5 pt-1 border-t border-white/10">
-                <div className="flex items-center gap-1.5">
-                  {mpConnectedRoom.raceStatus === 'lobby' || mpConnectedRoom.raceStatus === 'finished' ? (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        soundEngine.playUiChime(620);
-                        await multiplayerClient.startRace({ totalLaps: mpConnectedRoom.totalLaps || 2 });
-                      }}
-                      className="flex-1 py-1.5 px-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-neutral-950 font-display font-bold text-[10px] uppercase tracking-wider cursor-pointer"
-                    >
-                      🏁 Start Race (3-2-1-GO!)
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        soundEngine.playUiChime(460);
-                        await multiplayerClient.resetRace();
-                      }}
-                      className="flex-1 py-1.5 px-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-mono-tabular font-bold text-[10px] uppercase cursor-pointer"
-                    >
-                      ↺ Reset to Free Roam
-                    </button>
-                  )}
-                </div>
-
+              {!mpHudMinimized && (
                 <div className="flex items-center justify-between gap-1.5">
                   <span className="text-[9px] text-neutral-400 uppercase shrink-0">SWITCH CAR:</span>
                   <select
@@ -7682,13 +7784,13 @@ export function GameHUD({
                     ))}
                   </select>
                 </div>
-              </div>
+              )}
             </div>
-          )
+          </div>
         )}
 
-        {/* Optional Toggleable Vehicle Telemetry Panel */}
-        {gameSettings.showTelemetryOverlay && !hudCollapsed && !photoModeState.active && !replayState.active && (
+        {/* Optional Toggleable Vehicle Telemetry Panel (PC Only so Mobile Touch Steering is Unobstructed) */}
+        {gameSettings.showTelemetryOverlay && effectiveControlScheme === 'pc' && !hudCollapsed && !photoModeState.active && !replayState.active && (
           <div className="pointer-events-auto bg-neutral-950/90 border border-white/15 rounded-xl p-3 w-60 flex flex-col gap-1.5 font-mono-tabular tabular-nums">
             <div className="flex items-center justify-between border-b border-white/10 pb-1">
               <span className="text-[10px] font-mono-tabular uppercase tracking-wider text-neutral-200 font-bold">
@@ -7735,8 +7837,8 @@ export function GameHUD({
           </div>
         )}
 
-        {/* Drift Practice Checklist */}
-        {gameSettings.practiceMode && !hudCollapsed && !photoModeState.active && !replayState.active && (
+        {/* Drift Practice Checklist (PC only so mobile screens stay clean) */}
+        {gameSettings.practiceMode && effectiveControlScheme === 'pc' && !hudCollapsed && !photoModeState.active && !replayState.active && (
           <div className="pointer-events-auto self-start bg-neutral-950/90 border border-white/15 rounded-xl p-3 w-68 flex flex-col gap-1.5">
             <div className="flex items-center justify-between border-b border-white/10 pb-1">
               <div className="text-[10px] font-mono-tabular uppercase tracking-wider text-orange-400 font-bold">
@@ -8577,7 +8679,7 @@ export function GameHUD({
           </div>
         )}
 
-      {/* BOTTOM PERIMETER (Unobstructed driving view with minimal HUD toggle pill) */}
+      {/* BOTTOM PERIMETER (PC Mode: Unobstructed driving view with minimal HUD toggle pill) */}
       <div
         className={
           photoModeState.active || replayState.active
@@ -8585,26 +8687,184 @@ export function GameHUD({
             : 'flex items-end justify-center w-full'
         }
       >
-        <div className="pointer-events-auto flex items-center gap-2 mb-1">
-          <button
-            type="button"
-            tabIndex={-1}
-            onClick={(e) => {
-              e.currentTarget.blur();
-              setHudCollapsed((prev) => !prev);
-            }}
-            className="px-2.5 py-1 rounded-lg bg-neutral-950/80 border border-white/12 text-[10px] font-mono-tabular text-neutral-400 hover:text-white cursor-pointer whitespace-nowrap"
-          >
-            {hudCollapsed ? '▴ Show HUD' : '▾ Minimal View'}
-          </button>
-        </div>
+        {effectiveControlScheme === 'pc' && (
+          <div className="pointer-events-auto flex items-center gap-2">
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={(e) => {
+                e.currentTarget.blur();
+                setHudCollapsed((prev) => !prev);
+              }}
+              className="px-2.5 py-1 rounded-lg bg-neutral-950/80 border border-white/12 text-[10px] font-mono-tabular text-neutral-400 hover:text-white cursor-pointer whitespace-nowrap"
+            >
+              {hudCollapsed ? '▴ Show HUD [H]' : '▾ Minimal View [H]'}
+            </button>
+          </div>
+        )}
       </div>
 
       {renderSharedModals()}
 
       {/* ---------------------------------------------------------------------------
-          5. PAUSE MODAL CARD (Triggered by Esc or P)
+          5. POST-MATCH STATS & STANDINGS MODAL + PAUSE MODAL CARD
          --------------------------------------------------------------------------- */}
+      {showMatchEndStats && (
+        <div
+          className="fixed inset-0 z-40 pointer-events-auto bg-zinc-950/88 flex items-center justify-center p-3 sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="match-end-stats-title"
+        >
+          <div className="w-full max-w-lg max-h-[92dvh] overflow-y-auto bg-zinc-900 border border-white/15 rounded-2xl p-4 sm:p-6 shadow-2xl flex flex-col gap-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div>
+                <div className="text-[10px] font-mono-tabular uppercase tracking-wider text-emerald-400 font-bold">
+                  {mpConnectedRoom ? `MULTIPLAYER MATCH COMPLETE · #${mpConnectedRoom.inviteCode}` : 'RUN COMPLETE · SESSION TELEMETRY'}
+                </div>
+                <h2
+                  id="match-end-stats-title"
+                  className="text-xl sm:text-2xl font-display font-bold text-zinc-100 tracking-wide"
+                >
+                  MATCH RESULTS &amp; DRIFT STATS
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMatchEndStats(false)}
+                className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-mono-tabular text-zinc-200 cursor-pointer"
+              >
+                ✕ Close
+              </button>
+            </div>
+
+            {mpConnectedRoom && (
+              <div className="bg-zinc-950 border border-white/10 rounded-xl p-3 flex flex-col gap-1.5">
+                <div className="flex items-center justify-between text-[10px] font-mono-tabular uppercase text-zinc-400">
+                  <span>FINAL ROOM STANDINGS · {mpConnectedRoom.name}</span>
+                  <span className="text-amber-400 font-bold">{1 + mpRemotePlayers.length} DRIVER(S)</span>
+                </div>
+                <div className="flex items-center justify-between text-xs font-mono-tabular bg-zinc-900/90 border border-amber-500/30 rounded-lg px-2.5 py-1.5 text-zinc-100">
+                  <span className="font-bold text-amber-300">
+                    #1 ★ {mpPlayerName} ({selectedVehicle.chassisCode})
+                  </span>
+                  <span className="font-bold text-orange-400">
+                    {pauseSnapshot.totalScore.toLocaleString()} PTS
+                  </span>
+                </div>
+                {mpRemotePlayers.map((rp, idx) => {
+                  const vSpec = getVehicleById(rp.vehicleId);
+                  return (
+                    <div
+                      key={rp.playerId}
+                      className="flex items-center justify-between text-xs font-mono-tabular bg-zinc-900/50 rounded-lg px-2.5 py-1 text-zinc-300"
+                    >
+                      <span>
+                        #{idx + 2} {rp.playerName} ({vSpec.chassisCode})
+                      </span>
+                      <span className="font-semibold text-zinc-200">
+                        {Math.round(rp.driftScore + rp.currentDriftPoints).toLocaleString()} PTS
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="bg-zinc-950 border border-white/10 rounded-xl p-2.5">
+                <div className="text-[10px] font-mono-tabular text-zinc-400">TOTAL SCORE</div>
+                <div className="text-base font-mono-tabular font-bold text-amber-400 mt-0.5">
+                  {pauseSnapshot.totalScore.toLocaleString()}
+                </div>
+              </div>
+              <div className="bg-zinc-950 border border-white/10 rounded-xl p-2.5">
+                <div className="text-[10px] font-mono-tabular text-zinc-400">BEST COMBO</div>
+                <div className="text-base font-mono-tabular font-bold text-orange-400 mt-0.5">
+                  {pauseSnapshot.bestChain.toLocaleString()}
+                </div>
+              </div>
+              <div className="bg-zinc-950 border border-white/10 rounded-xl p-2.5">
+                <div className="text-[10px] font-mono-tabular text-zinc-400">MAX DRIFT ANGLE</div>
+                <div className="text-base font-mono-tabular font-bold text-zinc-100 mt-0.5">
+                  {pauseSnapshot.maxDriftAngle}°
+                </div>
+              </div>
+              <div className="bg-zinc-950 border border-white/10 rounded-xl p-2.5">
+                <div className="text-[10px] font-mono-tabular text-zinc-400">DRIFT DURATION</div>
+                <div className="text-base font-mono-tabular font-bold text-zinc-100 mt-0.5">
+                  {pauseSnapshot.driftDurationSec}s
+                </div>
+              </div>
+              <div className="bg-zinc-950 border border-white/10 rounded-xl p-2.5">
+                <div className="text-[10px] font-mono-tabular text-zinc-400">SMOOTHNESS</div>
+                <div className="text-base font-mono-tabular font-bold text-emerald-400 mt-0.5">
+                  {pauseSnapshot.smoothnessPct}%
+                </div>
+              </div>
+              <div className="bg-zinc-950 border border-white/10 rounded-xl p-2.5">
+                <div className="text-[10px] font-mono-tabular text-zinc-400">CONSISTENCY</div>
+                <div className="text-base font-mono-tabular font-bold text-emerald-400 mt-0.5">
+                  {pauseSnapshot.consistencyPct}%
+                </div>
+              </div>
+              <div className="bg-zinc-950 border border-white/10 rounded-xl p-2.5">
+                <div className="text-[10px] font-mono-tabular text-zinc-400">DISTANCE</div>
+                <div className="text-base font-mono-tabular font-bold text-zinc-100 mt-0.5">
+                  {pauseSnapshot.distanceKm} km
+                </div>
+              </div>
+              <div className="bg-zinc-950 border border-white/10 rounded-xl p-2.5">
+                <div className="text-[10px] font-mono-tabular text-zinc-400">MAX SPEED</div>
+                <div className="text-base font-mono-tabular font-bold text-zinc-100 mt-0.5">
+                  {pauseSnapshot.maxSpeed} km/h
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  soundEngine.playUiChime(600);
+                  setShowMatchEndStats(false);
+                  if (mpConnectedRoom) {
+                    await multiplayerClient.startRace({ totalLaps: mpConnectedRoom.totalLaps || 2 });
+                  } else {
+                    onResetCar();
+                    soloRaceStartMsRef.current = Date.now();
+                  }
+                }}
+                className="py-2.5 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              >
+                ↻ Play Again / Next Match
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playUiChime(520);
+                  setShowMatchEndStats(false);
+                }}
+                className="py-2.5 px-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              >
+                🚗 Continue Free Roam
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playUiChime(540);
+                  setShowMatchEndStats(false);
+                  onOpenGarage();
+                }}
+                className="py-2.5 px-3 rounded-xl bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/50 text-orange-300 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              >
+                🔧 Open 3D Garage
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {gameState === 'paused' && (
         <div
           className="fixed inset-0 z-30 pointer-events-auto bg-zinc-950/85 flex items-center justify-center p-4"

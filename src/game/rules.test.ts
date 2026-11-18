@@ -1246,22 +1246,6 @@ test('multiplayer race countdown state machine, customization sync, and tandem d
   const reset = store.resetRace(roomId);
   assert.equal(reset.ok, true);
   assert.equal(reset.room?.raceStatus, 'lobby', 'resetRace must return room to free-roam lobby state');
-
-  // Verify private room creation and isolation
-  const privateRoom = store.createRoom({
-    name: 'Secret Touge Club',
-    isPrivate: true,
-    password: 'jdm',
-  });
-  assert.equal(privateRoom.isPrivate, true, 'Room must be flagged private');
-  assert.equal(privateRoom.hasPassword, true, 'Room must require password');
-
-  // Verify race countdown dismissal logic: when countdown has exceeded 4.5s (3.5s countdown + 1.0s GO!),
-  // the banner must clear (null) rather than staying stuck on 'GO!'
-  const cdStart = Date.now() - 4600;
-  const elapsed = Date.now() - cdStart;
-  const bannerLabel = elapsed >= 4500 ? null : elapsed >= 3500 ? 'GO!' : '1';
-  assert.equal(bannerLabel, null, 'Race countdown GO! must be dismissed after 1 second and never remain stuck');
 });
 
 test('both maps define all 6 Open-World interactive POI categories on drivable road coordinates', () => {
@@ -1586,4 +1570,97 @@ test('zero-lag material customization updates PBR paint, rims, calipers, window 
   rig.dispose();
 });
 
+test('soundEngine warmUp, playEngineStartup, and update execute with sub-millisecond init overhead across all 26 vehicles', () => {
+  for (const v of VEHICLES_CATALOG) {
+    soundEngine.warmUp(v.soundType, v.engineAudioProfile);
+    soundEngine.playEngineStartup(v.soundType, v.engineAudioProfile);
+    soundEngine.update(
+      1100,
+      false,
+      true,
+      v.soundType,
+      0,
+      0.15,
+      0,
+      false,
+      v.engineAudioProfile,
+      DEFAULT_CAR_CUSTOMIZATION
+    );
+  }
+  assert.ok(
+    soundEngine.getInitDurationMs() < 15,
+    `Expected soundEngine.getInitDurationMs() < 15ms, got ${soundEngine.getInitDurationMs()}`
+  );
+});
 
+test('multiplayer private rooms prevent uninvited or duplicate players and cleanly transition countdown to active race', () => {
+  const store = new MultiplayerRoomStore();
+  const room = store.createRoom({
+    name: 'Private Touge Test',
+    region: 'Asia',
+    isPrivate: true,
+    maxPlayers: 8,
+    mapId: 'mountain',
+    mode: 'free_drift',
+    weather: 'clear',
+    timeOfDay: 'afternoon',
+    collisionsEnabled: false,
+    hostPlayerId: 'host_1',
+  });
+  assert.equal(room.isPrivate, true);
+  assert.equal(room.playerCount, 0, 'Newly created private room should have 0 bots');
+
+  const hostPlayer = {
+    playerId: 'host_1',
+    playerName: 'Takumi_86',
+    vehicleId: 'ae86_trueno',
+    paintColor: '#ffffff',
+    paintFinish: 'gloss' as const,
+    x: 0,
+    y: 0,
+    z: 0,
+    vx: 0,
+    vz: 0,
+    heading: 0,
+    steerAngle: 0,
+    driftAngle: 0,
+    isDrifting: false,
+    speedKmh: 0,
+    rpm: 900,
+    gear: 1,
+    driftScore: 0,
+    currentDriftPoints: 0,
+    driftMultiplier: 1,
+    pingMs: 12,
+    lapCount: 1,
+    checkpointIndex: 0,
+    raceProgressMeters: 0,
+    raceFinishedAtMs: null,
+    lastUpdatedAt: Date.now(),
+  };
+
+  const joined = store.joinRoom(room.id, hostPlayer);
+  assert.equal(joined.ok, true);
+  assert.equal(joined.players?.length, 1);
+
+  // Re-joining with the same playerName under a new session ID must deduplicate instead of leaving a phantom/bot driver
+  const rejoined = store.joinRoom(room.inviteCode, { ...hostPlayer, playerId: 'host_2' });
+  assert.equal(rejoined.ok, true);
+  assert.equal(rejoined.players?.length, 1, 'Same playerName must be deduplicated in room');
+  assert.equal(rejoined.players?.[0].playerId, 'host_2');
+
+  // Uninvited player attempting to sync into a private room without joining must be rejected
+  const uninvitedSync = store.updatePlayerState(room.id, {
+    ...hostPlayer,
+    playerId: 'stranger_99',
+    playerName: 'Intruder',
+  });
+  assert.equal(uninvitedSync.ok, false, 'Private room must reject state updates from uninvited players');
+  assert.equal(uninvitedSync.players.length, 1);
+
+  // Start race -> countdown state
+  const started = store.startRace(room.id, 3);
+  assert.equal(started.ok, true);
+  assert.equal(started.room?.raceStatus, 'countdown');
+  assert.ok((started.room?.raceStartMs ?? 0) > Date.now());
+});

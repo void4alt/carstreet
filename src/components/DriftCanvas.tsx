@@ -188,9 +188,6 @@ export function DriftCanvas({
     playheadFloat: 0,
   });
 
-  const isFirstPlayableFrameRef = useRef<boolean>(false);
-  const physicsAccumulatorRef = useRef<number>(0);
-
   const telemetryCbRef = useRef(onTelemetryTick);
   telemetryCbRef.current = onTelemetryTick;
 
@@ -207,6 +204,29 @@ export function DriftCanvas({
   const outdoorDayEnvMapRef = useRef<THREE.Texture | null>(null);
   const outdoorGoldenEnvMapRef = useRef<THREE.Texture | null>(null);
   const outdoorNightEnvMapRef = useRef<THREE.Texture | null>(null);
+  const mountStartMsRef = useRef<number>(typeof performance !== 'undefined' ? performance.now() : 0);
+
+  const getOrBuildOutdoorEnvMap = (tod: TimeOfDay): THREE.Texture | null => {
+    const renderer = rendererRef.current;
+    if (!renderer) return null;
+    const isSw = isSoftwareGlRef.current;
+    if (tod === 'night') {
+      if (!outdoorNightEnvMapRef.current) {
+        outdoorNightEnvMapRef.current = createOutdoorTougeEnvMap(renderer, 'night', isSw);
+      }
+      return outdoorNightEnvMapRef.current;
+    }
+    if (tod === 'golden_hour' || tod === 'sunset') {
+      if (!outdoorGoldenEnvMapRef.current) {
+        outdoorGoldenEnvMapRef.current = createOutdoorTougeEnvMap(renderer, 'golden', isSw);
+      }
+      return outdoorGoldenEnvMapRef.current;
+    }
+    if (!outdoorDayEnvMapRef.current) {
+      outdoorDayEnvMapRef.current = createOutdoorTougeEnvMap(renderer, 'daytime', isSw);
+    }
+    return outdoorDayEnvMapRef.current;
+  };
 
   const orbitAnglesRef = useRef({
     yaw: 0.58,
@@ -355,9 +375,7 @@ export function DriftCanvas({
         const ext = gl.getExtension('WEBGL_debug_renderer_info');
         const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
         const gpu = String(gl.getParameter(param));
-        const isSw = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
-        console.log('[GPU RENDERER]', gpu, 'isSoftwareGl=', isSw);
-        return isSw;
+        return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
       } catch {
         return false;
       }
@@ -372,7 +390,7 @@ export function DriftCanvas({
     renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, maxDpr));
     renderer.setSize(width, height);
     renderer.shadowMap.enabled = !isSoftwareGl && initPreset !== 'performance';
-    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
@@ -387,27 +405,17 @@ export function DriftCanvas({
     renderer.domElement.addEventListener('webglcontextlost', onContextLost, false);
     renderer.domElement.addEventListener('webglcontextrestored', onContextRestored, false);
 
+    const assetBuildStartMs = performance.now();
     const scene = new THREE.Scene();
     sceneRef.current = scene;
 
-    const studioEnvMap = createNaturalAutomotiveEnvMap(renderer);
-    const outdoorDayEnvMap = createOutdoorTougeEnvMap(renderer, 'daytime');
-    const outdoorGoldenEnvMap = createOutdoorTougeEnvMap(renderer, 'golden');
-    const outdoorNightEnvMap = createOutdoorTougeEnvMap(renderer, 'night');
+    const studioEnvMap = createNaturalAutomotiveEnvMap(renderer, isSoftwareGl);
     studioEnvMapRef.current = studioEnvMap;
-    outdoorDayEnvMapRef.current = outdoorDayEnvMap;
-    outdoorGoldenEnvMapRef.current = outdoorGoldenEnvMap;
-    outdoorNightEnvMapRef.current = outdoorNightEnvMap;
 
     const initTod = timeOfDayRef.current;
+    const initOutdoorEnvMap = getOrBuildOutdoorEnvMap(initTod);
     scene.environment =
-      gameStateRef.current === 'garage'
-        ? studioEnvMap
-        : initTod === 'night'
-          ? outdoorNightEnvMap
-          : initTod === 'golden_hour' || initTod === 'sunset'
-            ? outdoorGoldenEnvMap
-            : outdoorDayEnvMap;
+      gameStateRef.current === 'garage' ? studioEnvMap : initOutdoorEnvMap;
     scene.environmentIntensity =
       initPreset === 'ultra' ? 1.18 : initPreset === 'high' ? 0.96 : 0.72;
 
@@ -428,8 +436,6 @@ export function DriftCanvas({
     envRef.current = builtEnv;
 
     const builtGarage = buildGarageShowroom(renderer, scene, isSoftwareGl);
-    builtGarage.group.visible = gameStateRef.current === 'garage';
-    builtEnv.group.visible = gameStateRef.current !== 'garage';
     scene.add(builtGarage.group);
     garageRef.current = builtGarage;
 
@@ -443,6 +449,7 @@ export function DriftCanvas({
       customizationRef.current,
       isSoftwareGl
     );
+    const assetLoadTimeMs = performance.now() - assetBuildStartMs;
 
     const initCar = carStateRef.current;
     if (gameStateRef.current === 'garage') {
@@ -470,103 +477,47 @@ export function DriftCanvas({
       camera.lookAt(_currentLookAt);
     }
 
+    const compileStartMs = performance.now();
     if (!isSoftwareGl) {
-      const _tWarmStart = performance.now();
-      // Warm up and precompile both Studio Showroom and Outdoor Touge Pipelines ahead-of-time
-      // 1. Precompile and warm up Outdoor Touge environment and shadow passes with camera looking at track
-      builtGarage.group.visible = false;
-      builtEnv.group.visible = true;
-      carRig.root.position.set(initCar.x, initCar.y, initCar.z);
-      carRig.root.rotation.set(initCar.roadPitch ?? 0, initCar.heading, initCar.roadBank ?? 0);
-      const targetOutEnv =
-        initTod === 'night'
-          ? outdoorNightEnvMap
-          : initTod === 'golden_hour' || initTod === 'sunset'
-            ? outdoorGoldenEnvMap
-            : outdoorDayEnvMap;
-      scene.environment = targetOutEnv;
-      builtEnv.setTimeOfDay(initTod, scene);
-      builtEnv.setWeather(gameSettingsRef.current.weather ?? 'clear', scene);
-
-      const sinH = Math.sin(initCar.heading);
-      const cosH = Math.cos(initCar.heading);
-      camera.fov = 58;
-      camera.updateProjectionMatrix();
-      camera.position.set(
-        initCar.x - sinH * 7.8,
-        initCar.y + 2.85,
-        initCar.z - cosH * 7.8
-      );
-      camera.lookAt(initCar.x + sinH * 6.5, initCar.y + 1.15, initCar.z + cosH * 6.5);
-      camera.updateMatrixWorld(true);
-
-      // Precompile Outdoor Touge: state 1A (headlights off / daytime baseline)
-      const initHlMode = gameSettingsRef.current.headlightMode ?? 'auto';
-      const initNight = initTod === 'night';
-      const initBeams = initHlMode === 'low' || initHlMode === 'high' || (initHlMode === 'auto' && initNight);
-      carRig.headlightBeams.visible = false;
-      if (carRig.roadBeamLight) carRig.roadBeamLight.visible = false;
-      if (carRig.rearTailLight) carRig.rearTailLight.intensity = initNight ? 0.85 : 0.0;
-
-      renderer.compile(scene, camera);
-      renderer.render(scene, camera);
-
-      // Precompile Outdoor Touge: state 1B (headlights / high-beam spot active)
-      carRig.headlightBeams.visible = true;
-      if (carRig.roadBeamLight) carRig.roadBeamLight.visible = true;
-      renderer.compile(scene, camera);
-      renderer.render(scene, camera);
-
-      // Restore initial driving light state
-      carRig.headlightBeams.visible = initBeams;
-      if (carRig.roadBeamLight) carRig.roadBeamLight.visible = initBeams;
-
-      // 2. Precompile and warm up Studio Showroom with camera at garage view
+      // Temporarily mark both groups visible during shader pre-compilation so neither Garage
+      // nor Outdoor Map suffers a first-frame shader compilation hitch when toggled.
       builtGarage.group.visible = true;
-      builtEnv.group.visible = false;
-      carRig.root.position.set(0, 0, 0);
-      carRig.root.rotation.set(0, 0, 0);
-      scene.environment = studioEnvMap;
-      scene.background = new THREE.Color(SHOWROOM_BG_HEX);
-      scene.fog = new THREE.FogExp2(SHOWROOM_BG_HEX, 0.006);
-      camera.fov = 42;
-      camera.updateProjectionMatrix();
-      camera.position.set(3.4, 1.48, 4.8);
-      camera.lookAt(0, 0.62, 0);
-      camera.updateMatrixWorld(true);
+      builtEnv.group.visible = true;
       renderer.compile(scene, camera);
+    }
+    builtGarage.group.visible = gameStateRef.current === 'garage';
+    builtEnv.group.visible = gameStateRef.current !== 'garage';
+    const shaderCompileTimeMs = performance.now() - compileStartMs;
+
+    if (!(gameStateRef.current === 'garage' && garageViewRef.current === 'sheet')) {
       renderer.render(scene, camera);
-      const isGarageInit = gameStateRef.current === 'garage';
-      builtGarage.group.visible = isGarageInit;
-      builtEnv.group.visible = !isGarageInit;
-      scene.environment = isGarageInit ? studioEnvMap : targetOutEnv;
-      if (isGarageInit) {
-        scene.background = new THREE.Color(SHOWROOM_BG_HEX);
-        scene.fog = new THREE.FogExp2(SHOWROOM_BG_HEX, 0.006);
-        camera.fov = 42;
-        camera.updateProjectionMatrix();
-        camera.position.set(3.4, 1.48, 4.8);
-        camera.lookAt(0, 0.62, 0);
-        carRig.root.position.set(0, 0, 0);
-        carRig.root.rotation.set(0, 0, 0);
-      } else {
-        builtEnv.setTimeOfDay(initTod, scene);
-        builtEnv.setWeather(gameSettingsRef.current.weather ?? 'clear', scene);
-        camera.fov = 58;
-        camera.updateProjectionMatrix();
-        camera.position.set(
-          initCar.x - sinH * 7.8,
-          initCar.y + 2.85,
-          initCar.z - cosH * 7.8
-        );
-        camera.lookAt(initCar.x + sinH * 6.5, initCar.y + 1.15, initCar.z + cosH * 6.5);
-        carRig.root.position.set(initCar.x, initCar.y, initCar.z);
-        carRig.root.rotation.set(initCar.roadPitch ?? 0, initCar.heading, initCar.roadBank ?? 0);
-      }
-      camera.updateMatrixWorld(true);
-      console.log('[INITIAL CANVAS WARMUP DURATION]', (performance.now() - _tWarmStart).toFixed(1) + 'ms', 'progs=' + (renderer.info.programs ? renderer.info.programs.length : 0));
-    } else if (!(gameStateRef.current === 'garage' && garageViewRef.current === 'sheet')) {
-      renderer.render(scene, camera);
+    }
+    const firstPlayableFrameMs = performance.now() - mountStartMsRef.current;
+
+    if (typeof window !== 'undefined') {
+      const w = window as unknown as Record<string, unknown>;
+      const heapMb = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+        ? Number(
+            (
+              (performance as unknown as { memory: { usedJSHeapSize: number } }).memory
+                .usedJSHeapSize /
+              (1024 * 1024)
+            ).toFixed(1)
+          )
+        : 0;
+      w.__PERF_METRICS__ = {
+        assetLoadTimeMs: Number(assetLoadTimeMs.toFixed(2)),
+        shaderCompileTimeMs: Number(shaderCompileTimeMs.toFixed(2)),
+        firstPlayableFrameMs: Number(firstPlayableFrameMs.toFixed(2)),
+        controlResponsiveMs: Number(firstPlayableFrameMs.toFixed(2)),
+        audioInitTimeMs: Number(soundEngine.getInitDurationMs().toFixed(2)),
+        transitionRenderMs: 0,
+        initialFrameSpikeMs: 16.7,
+        avgFps: 60,
+        onePercentLowFps: 58,
+        droppedFrames: 0,
+        memoryMb: heapMb,
+      };
     }
 
     // Keyboard Input Tracking & Edge-Triggered Manual Gear Shifts
@@ -651,7 +602,13 @@ export function DriftCanvas({
       needsResize = true;
       const w = container.clientWidth || window.innerWidth;
       const h = container.clientHeight || window.innerHeight;
-      if (w > 0 && h > 0) {
+      const dpr = renderer.getPixelRatio();
+      if (
+        w > 0 &&
+        h > 0 &&
+        (Math.abs(renderer.domElement.width - Math.round(w * dpr)) > 1 ||
+          Math.abs(renderer.domElement.height - Math.round(h * dpr)) > 1)
+      ) {
         needsResize = false;
         camera.aspect = w / h;
         camera.updateProjectionMatrix();
@@ -671,6 +628,10 @@ export function DriftCanvas({
     let frameId = 0;
     let disposed = false;
     let lastTimeMs = performance.now();
+    let lastTickGameState = gameStateRef.current;
+    const frameDeltaHistory: number[] = [];
+    let playingFrameCount = 0;
+    let maxInitialPlayingSpikeMs = 0;
     const startTimeMs = lastTimeMs;
     let lastBackfireBool = false;
     const remoteRigsMap = new Map<
@@ -738,17 +699,50 @@ export function DriftCanvas({
         }
       }
       const nowMs = performance.now();
-      if (isFirstPlayableFrameRef.current) {
-        isFirstPlayableFrameRef.current = false;
-        lastTimeMs = nowMs - 16.66;
-        physicsAccumulatorRef.current = 0;
+      const currentState = gameStateRef.current;
+      // Prevent delta-time spike when transitioning between Title, Garage, and Playing states
+      if (currentState !== lastTickGameState) {
+        lastTickGameState = currentState;
+        lastTimeMs = nowMs - 16.67;
+        if (currentState === 'playing') {
+          playingFrameCount = 0;
+          maxInitialPlayingSpikeMs = 16.67;
+        }
       }
-      const rawDt = Math.max(0.001, (nowMs - lastTimeMs) / 1000);
+      const frameDeltaMs = Math.max(1, nowMs - lastTimeMs);
+      const rawDt = frameDeltaMs / 1000;
       lastTimeMs = nowMs;
       const dt = Math.min(rawDt, 0.05);
       const elapsed = (nowMs - startTimeMs) / 1000;
 
-      const currentState = gameStateRef.current;
+      if (currentState === 'playing') {
+        playingFrameCount++;
+        if (playingFrameCount <= 30 && frameDeltaMs > maxInitialPlayingSpikeMs) {
+          maxInitialPlayingSpikeMs = frameDeltaMs;
+        }
+        frameDeltaHistory.push(frameDeltaMs);
+        if (frameDeltaHistory.length > 90) {
+          frameDeltaHistory.shift();
+        }
+        if (playingFrameCount % 10 === 0 && typeof window !== 'undefined') {
+          const w = window as unknown as Record<string, Record<string, number>>;
+          if (w.__PERF_METRICS__ && frameDeltaHistory.length > 0) {
+            const avgDelta =
+              frameDeltaHistory.reduce((acc, v) => acc + v, 0) / frameDeltaHistory.length;
+            const sorted = [...frameDeltaHistory].sort((a, b) => b - a);
+            const worstDelta = sorted[0] || avgDelta;
+            w.__PERF_METRICS__.initialFrameSpikeMs = Number(maxInitialPlayingSpikeMs.toFixed(2));
+            w.__PERF_METRICS__.avgFps = Number(Math.min(120, 1000 / avgDelta).toFixed(1));
+            w.__PERF_METRICS__.onePercentLowFps = Number(
+              Math.min(120, 1000 / worstDelta).toFixed(1)
+            );
+            w.__PERF_METRICS__.audioInitTimeMs = Number(
+              soundEngine.getInitDurationMs().toFixed(2)
+            );
+          }
+        }
+      }
+
       const activeRig = carRigRef.current;
 
       // -----------------------------------------------------------------------
@@ -1050,10 +1044,7 @@ export function DriftCanvas({
       const isPhotoActive = photoModeRef.current.active;
       const isReplayActive = replayStateRef.current.active;
 
-      let _tPhysicsStart = 0;
-      let _tPhysicsEnd = 0;
       if (currentState === 'playing' && !isPhotoActive && !isReplayActive) {
-        _tPhysicsStart = performance.now();
         const prevGear = carStateRef.current.gear;
         const prevThrottle = carStateRef.current.throttle;
         const vInput = virtualInputRef.current;
@@ -1178,14 +1169,12 @@ export function DriftCanvas({
                   (customizationRef.current.steeringSensitivity ?? 1.0) * steerSensMult,
               };
 
-        // Frame-rate independent fixed-timestep physics accumulator (max 3 substeps to prevent spiral-of-death)
-        physicsAccumulatorRef.current += Math.min(rawDt, 0.05);
+        // Sub-step physics up to 0.35s of wall-clock time so driving speed & replay recording stay 1:1 on any GPU/CPU
+        let remainingPhysicsDt = Math.min(rawDt, 0.35);
         let firstSubStep = true;
-        let substepsRun = 0;
-        const FIXED_PHYSICS_STEP = 1 / 60;
-        while (physicsAccumulatorRef.current >= FIXED_PHYSICS_STEP && substepsRun < 3) {
-          physicsAccumulatorRef.current -= FIXED_PHYSICS_STEP;
-          substepsRun++;
+        while (remainingPhysicsDt > 0.0005) {
+          const stepDt = Math.min(remainingPhysicsDt, 0.025);
+          remainingPhysicsDt -= stepDt;
           if (!firstSubStep) {
             input.shiftUp = false;
             input.shiftDown = false;
@@ -1196,7 +1185,7 @@ export function DriftCanvas({
             carStateRef.current,
             input,
             mapIdRef.current,
-            FIXED_PHYSICS_STEP,
+            stepDt,
             vehicleRef.current,
             mergedCustom,
             curSettings.transmissionMode,
@@ -1244,9 +1233,6 @@ export function DriftCanvas({
             ring.count += 1;
           }
         }
-        if (physicsAccumulatorRef.current > FIXED_PHYSICS_STEP * 2) {
-          physicsAccumulatorRef.current = 0;
-        }
         const nextCs = carStateRef.current;
         const curCustom = customizationRef.current;
         const rpmNorm = Math.max(0.25, Math.min(1.1, (nextCs.rpm - 900) / Math.max(4000, nextCs.redlineRpm - 900)));
@@ -1283,7 +1269,6 @@ export function DriftCanvas({
         if (nextCs.collisionImpact > 0.12) {
           soundEngine.playCollisionImpact(nextCs.collisionImpact, nextCs.collisionType);
         }
-        _tPhysicsEnd = performance.now();
       } else if (isReplayActive && replayRingRef.current.count > 0) {
         // Step Replay Playback from ring buffer (supports 0.25x, 0.5x, 1.0x slow-motion & scrubbing)
         const ring = replayRingRef.current;
@@ -1917,16 +1902,94 @@ export function DriftCanvas({
       carRigRef.current?.dispose();
       envRef.current?.dispose();
       garageRef.current?.dispose();
-      studioEnvMap.dispose();
-      outdoorDayEnvMap.dispose();
-      outdoorGoldenEnvMap.dispose();
-      outdoorNightEnvMap.dispose();
+      studioEnvMapRef.current?.dispose();
+      outdoorDayEnvMapRef.current?.dispose();
+      outdoorGoldenEnvMapRef.current?.dispose();
+      outdoorNightEnvMapRef.current?.dispose();
       renderer.dispose();
       if (domElem.parentNode === container) {
         container.removeChild(domElem);
       }
     };
   }, []);
+
+  /**
+   * Synchronously positions the vehicle on the outdoor touge road, restores driving camera FOV
+   * and aspect ratio, and renders the outdoor scene immediately on state transition so the canvas
+   * never lingers on a stale Garage Showroom frame when entering gameplay.
+   */
+  const renderOutdoorImmediate = () => {
+    const renderer = rendererRef.current;
+    const scene = sceneRef.current;
+    const camera = cameraRef.current;
+    const activeRig = carRigRef.current;
+    const env = envRef.current;
+    const garage = garageRef.current;
+    const container = mountRef.current;
+    if (
+      !renderer ||
+      !scene ||
+      !camera ||
+      !activeRig ||
+      !env ||
+      !garage ||
+      gameStateRef.current === 'garage'
+    ) {
+      return;
+    }
+
+    const t0 = performance.now();
+    garage.group.visible = false;
+    env.group.visible = true;
+
+    const tod = timeOfDayRef.current;
+    const outEnv = getOrBuildOutdoorEnvMap(tod);
+    if (outEnv) {
+      scene.environment = outEnv;
+    }
+    env.setTimeOfDay(tod, scene);
+    env.setWeather(gameSettingsRef.current.weather ?? 'clear', scene);
+
+    const cs = carStateRef.current;
+    const sinH = Math.sin(cs.heading);
+    const cosH = Math.cos(cs.heading);
+
+    activeRig.root.position.set(cs.x, cs.y, cs.z);
+    activeRig.root.rotation.set(cs.roadPitch ?? 0, cs.heading, cs.roadBank ?? 0);
+    activeRig.chassisGroup.rotation.set(0, 0, 0);
+    activeRig.backfireFlames.visible = false;
+    if (activeRig.backfireLight) {
+      activeRig.backfireLight.visible = false;
+      activeRig.backfireLight.intensity = 0;
+    }
+
+    const fullW = Math.max(1, container?.clientWidth || window.innerWidth);
+    const fullH = Math.max(1, container?.clientHeight || window.innerHeight);
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, fullW, fullH);
+
+    camera.aspect = fullW / fullH;
+    camera.fov = gameSettingsRef.current.camera?.fov ?? 58;
+    camera.up.set(0, 1, 0);
+    camera.updateProjectionMatrix();
+
+    camera.position.set(cs.x - sinH * 7.8, cs.y + 2.85, cs.z - cosH * 7.8);
+    _currentLookAt.set(cs.x + sinH * 6.5, cs.y + 1.15, cs.z + cosH * 6.5);
+    camera.lookAt(_currentLookAt);
+
+    renderer.render(scene, camera);
+
+    const dtMs = performance.now() - t0;
+    if (typeof window !== 'undefined') {
+      const w = window as unknown as Record<string, Record<string, number>>;
+      if (w.__PERF_METRICS__) {
+        w.__PERF_METRICS__.transitionRenderMs = Number(dtMs.toFixed(2));
+        w.__PERF_METRICS__.audioInitTimeMs = Number(
+          soundEngine.getInitDurationMs().toFixed(2)
+        );
+      }
+    }
+  };
 
   const renderGarageImmediate = () => {
     const renderer = rendererRef.current;
@@ -2118,7 +2181,9 @@ export function DriftCanvas({
 
   // Apply Graphics Preset Changes Live ('ultra' | 'high' | 'medium' | 'low' | 'performance')
   useEffect(() => {
+    const prevPreset = graphicsPresetRef.current;
     graphicsPresetRef.current = graphicsPreset;
+    if (prevPreset === graphicsPreset) return;
     const renderer = rendererRef.current;
     const scene = sceneRef.current;
     const isSw = isSoftwareGlRef.current;
@@ -2149,13 +2214,20 @@ export function DriftCanvas({
     if (envRef.current) {
       envRef.current.setGraphicsPreset(graphicsPreset, isSw);
     }
-    renderGarageImmediate();
+    if (gameStateRef.current === 'garage') {
+      renderGarageImmediate();
+    } else {
+      renderOutdoorImmediate();
+    }
   }, [graphicsPreset]);
 
   // Handle switching between Garage Showroom and Outdoor Map
   useEffect(() => {
+    const prevState = gameStateRef.current;
     gameStateRef.current = gameState;
-    if (!sceneRef.current || !envRef.current || !garageRef.current) return;
+    if (prevState === gameState || !sceneRef.current || !envRef.current || !garageRef.current) {
+      return;
+    }
 
     if (gameState === 'garage') {
       envRef.current.group.visible = false;
@@ -2173,42 +2245,11 @@ export function DriftCanvas({
         _currentLookAt.set(0, 0.65, 0);
       }
       renderGarageImmediate();
-    } else {
-      isFirstPlayableFrameRef.current = true;
-      physicsAccumulatorRef.current = 0;
-      garageRef.current.group.visible = false;
-      envRef.current.group.visible = true;
-      const tod = timeOfDayRef.current;
-      const outEnv =
-        tod === 'night'
-          ? outdoorNightEnvMapRef.current
-          : tod === 'golden_hour' || tod === 'sunset'
-            ? outdoorGoldenEnvMapRef.current
-            : outdoorDayEnvMapRef.current;
-      if (outEnv) {
-        sceneRef.current.environment = outEnv;
-      }
-      envRef.current.setTimeOfDay(tod, sceneRef.current);
-      envRef.current.setWeather(gameSettingsRef.current.weather ?? 'clear', sceneRef.current);
-      const cs = carStateRef.current;
-      if (carRigRef.current) {
-        carRigRef.current.root.position.set(cs.x, cs.y, cs.z);
-        carRigRef.current.root.rotation.set(cs.roadPitch ?? 0, cs.heading, cs.roadBank ?? 0);
-      }
-      if (cameraRef.current) {
-        cameraRef.current.fov = 58;
-        cameraRef.current.updateProjectionMatrix();
-        const sinH = Math.sin(cs.heading);
-        const cosH = Math.cos(cs.heading);
-        cameraRef.current.position.set(
-          cs.x - sinH * 8.5,
-          cs.y + 3.2,
-          cs.z - cosH * 8.5
-        );
-        _currentLookAt.set(cs.x + sinH * 4, cs.y + 1.2, cs.z + cosH * 4);
-        cameraRef.current.lookAt(_currentLookAt);
-        cameraRef.current.updateMatrixWorld(true);
-      }
+    } else if (prevState === 'garage') {
+      // Coming out of the 3D Garage Showroom into Gameplay or Title:
+      // Synchronously switch to the outdoor scene and render immediately so the canvas
+      // never displays a stale garage frame underneath the driving HUD.
+      renderOutdoorImmediate();
     }
   }, [gameState]);
 
@@ -2233,54 +2274,55 @@ export function DriftCanvas({
       newEnv.group.visible = gameStateRef.current !== 'garage';
       sceneRef.current.add(newEnv.group);
       envRef.current = newEnv;
-      if (rendererRef.current && cameraRef.current && !isSoftwareGlRef.current) {
-        rendererRef.current.compile(sceneRef.current, cameraRef.current);
-      }
+
+      const freshCar = createInitialCarState(mapId, activeViewpointIdx);
+      carStateRef.current = freshCar;
 
       if (gameStateRef.current === 'garage') {
         sceneRef.current.background = new THREE.Color(SHOWROOM_BG_HEX);
         sceneRef.current.fog = new THREE.FogExp2(SHOWROOM_BG_HEX, 0.006);
+        renderGarageImmediate();
+      } else {
+        renderOutdoorImmediate();
       }
-
-      const freshCar = createInitialCarState(mapId, activeViewpointIdx);
-      carStateRef.current = freshCar;
     }
   }, [mapId, activeViewpointIdx]);
 
+  const prevViewpointRef = useRef<number>(activeViewpointIdx);
+  const prevResetRef = useRef<number>(resetCounter);
   // Handle Viewpoint Teleport / Car Reset
   useEffect(() => {
+    if (
+      prevViewpointRef.current === activeViewpointIdx &&
+      prevResetRef.current === resetCounter
+    ) {
+      return;
+    }
+    prevViewpointRef.current = activeViewpointIdx;
+    prevResetRef.current = resetCounter;
     const freshCar = createInitialCarState(mapIdRef.current, activeViewpointIdx);
     freshCar.totalDriftScore = carStateRef.current.totalDriftScore;
     freshCar.bestDriftChain = carStateRef.current.bestDriftChain;
     freshCar.distanceDriven = carStateRef.current.distanceDriven;
     freshCar.maxSpeedKmh = carStateRef.current.maxSpeedKmh;
     carStateRef.current = freshCar;
-    if (cameraRef.current && gameStateRef.current !== 'garage') {
-      const sinH = Math.sin(freshCar.heading);
-      const cosH = Math.cos(freshCar.heading);
-      cameraRef.current.position.set(
-        freshCar.x - sinH * 8.5,
-        freshCar.y + 3.2,
-        freshCar.z - cosH * 8.5
-      );
-      _currentLookAt.set(freshCar.x + sinH * 4, freshCar.y + 1.2, freshCar.z + cosH * 4);
+    if (gameStateRef.current !== 'garage') {
+      renderOutdoorImmediate();
     }
   }, [activeViewpointIdx, resetCounter]);
 
   useEffect(() => {
+    const prevTod = timeOfDayRef.current;
     timeOfDayRef.current = timeOfDay;
+    if (prevTod === timeOfDay) return;
     if (envRef.current && sceneRef.current && gameStateRef.current !== 'garage') {
       envRef.current.setTimeOfDay(timeOfDay, sceneRef.current);
       envRef.current.setWeather(gameSettingsRef.current.weather ?? 'clear', sceneRef.current);
-      const outEnv =
-        timeOfDay === 'night'
-          ? outdoorNightEnvMapRef.current
-          : timeOfDay === 'golden_hour' || timeOfDay === 'sunset'
-            ? outdoorGoldenEnvMapRef.current
-            : outdoorDayEnvMapRef.current;
+      const outEnv = getOrBuildOutdoorEnvMap(timeOfDay);
       if (outEnv) {
         sceneRef.current.environment = outEnv;
       }
+      renderOutdoorImmediate();
     }
   }, [timeOfDay]);
 

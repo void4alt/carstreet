@@ -1,12 +1,6 @@
 import * as THREE from 'three';
 import { MapId } from './types';
 
-const proceduralTextureCache = new Map<string, any>();
-
-export function clearProceduralTextureCache(): void {
-  proceduralTextureCache.clear();
-}
-
 function configureTexture(
   tex: THREE.CanvasTexture,
   renderer: THREE.WebGLRenderer,
@@ -25,15 +19,18 @@ function configureTexture(
   return tex;
 }
 
+const _roadTextureCache = new Map<
+  MapId,
+  { map: THREE.CanvasTexture; bumpMap: THREE.CanvasTexture; roughnessMap: THREE.CanvasTexture }
+>();
+const _textureCache = new Map<string, THREE.CanvasTexture>();
+
 export function createRoadTexture(
   renderer: THREE.WebGLRenderer,
   mapId: MapId
 ): { map: THREE.CanvasTexture; bumpMap: THREE.CanvasTexture; roughnessMap: THREE.CanvasTexture } {
-  const cacheKey = `road_${mapId}`;
-  if (proceduralTextureCache.has(cacheKey)) {
-    return proceduralTextureCache.get(cacheKey);
-  }
-
+  const cached = _roadTextureCache.get(mapId);
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 1024;
   canvas.height = 1024;
@@ -243,23 +240,22 @@ export function createRoadTexture(
 
   // NOTE: buildRoadRibbonGeometry already scales V by accDist * 0.055 (1 unit per 18.18m),
   // so repeatY MUST be 1 for map/roughnessMap and 2 for bumpMap (not 36, which squashed 18m into 0.5m!)
-  const res = {
+  const result = {
     map: configureTexture(new THREE.CanvasTexture(canvas), renderer, true, 1, 1),
     bumpMap: configureTexture(new THREE.CanvasTexture(bumpCanvas), renderer, false, 2, 2),
     roughnessMap: configureTexture(new THREE.CanvasTexture(roughCanvas), renderer, false, 1, 1),
   };
-  proceduralTextureCache.set(cacheKey, res);
-  return res;
+  _roadTextureCache.set(mapId, result);
+  return result;
 }
 
 export function createPlazaTexture(
   renderer: THREE.WebGLRenderer,
   mapId: MapId
 ): THREE.CanvasTexture {
-  const cacheKey = `plaza_${mapId}`;
-  if (proceduralTextureCache.has(cacheKey)) {
-    return proceduralTextureCache.get(cacheKey);
-  }
+  const cacheKey = `plaza:${mapId}`;
+  const cached = _textureCache.get(cacheKey);
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 512;
   canvas.height = 512;
@@ -332,16 +328,13 @@ export function createPlazaTexture(
   }
 
   const tex = configureTexture(new THREE.CanvasTexture(canvas), renderer, true, 1, 1);
-  proceduralTextureCache.set(cacheKey, tex);
+  _textureCache.set(cacheKey, tex);
   return tex;
 }
 
 export function createChevronSignTexture(renderer: THREE.WebGLRenderer): THREE.CanvasTexture {
-  const cacheKey = 'chevron_sign';
-  if (proceduralTextureCache.has(cacheKey)) {
-    return proceduralTextureCache.get(cacheKey);
-  }
-
+  const cached = _textureCache.get('chevron');
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 128;
@@ -368,7 +361,7 @@ export function createChevronSignTexture(renderer: THREE.WebGLRenderer): THREE.C
   ctx.strokeRect(3, 3, 250, 122);
 
   const tex = configureTexture(new THREE.CanvasTexture(canvas), renderer, true, 1, 1);
-  proceduralTextureCache.set(cacheKey, tex);
+  _textureCache.set('chevron', tex);
   return tex;
 }
 
@@ -376,11 +369,9 @@ export function createJapaneseRoadSignTexture(
   renderer: THREE.WebGLRenderer,
   mapId: MapId
 ): THREE.CanvasTexture {
-  const cacheKey = `jp_sign_${mapId}`;
-  if (proceduralTextureCache.has(cacheKey)) {
-    return proceduralTextureCache.get(cacheKey);
-  }
-
+  const cacheKey = `sign:${mapId}`;
+  const cached = _textureCache.get(cacheKey);
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
@@ -426,16 +417,13 @@ export function createJapaneseRoadSignTexture(
   }
 
   const tex = configureTexture(new THREE.CanvasTexture(canvas), renderer, true, 1, 1);
-  proceduralTextureCache.set(cacheKey, tex);
+  _textureCache.set(cacheKey, tex);
   return tex;
 }
 
 export function createBuildingWallTexture(renderer: THREE.WebGLRenderer): THREE.CanvasTexture {
-  const cacheKey = 'building_wall';
-  if (proceduralTextureCache.has(cacheKey)) {
-    return proceduralTextureCache.get(cacheKey);
-  }
-
+  const cached = _textureCache.get('wall');
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
@@ -473,17 +461,14 @@ export function createBuildingWallTexture(renderer: THREE.WebGLRenderer): THREE.
     ctx.stroke();
   }
 
-  const wallTex = configureTexture(new THREE.CanvasTexture(canvas), renderer, true, 2, 1);
-  proceduralTextureCache.set(cacheKey, wallTex);
-  return wallTex;
+  const tex = configureTexture(new THREE.CanvasTexture(canvas), renderer, true, 2, 1);
+  _textureCache.set('wall', tex);
+  return tex;
 }
 
 export function createRockBumpTexture(renderer: THREE.WebGLRenderer): THREE.CanvasTexture {
-  const cacheKey = 'rock_bump';
-  if (proceduralTextureCache.has(cacheKey)) {
-    return proceduralTextureCache.get(cacheKey);
-  }
-
+  const cached = _textureCache.get('rockBump');
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
@@ -502,16 +487,13 @@ export function createRockBumpTexture(renderer: THREE.WebGLRenderer): THREE.Canv
   }
 
   const tex = configureTexture(new THREE.CanvasTexture(canvas), renderer, false, 8, 8);
-  proceduralTextureCache.set(cacheKey, tex);
+  _textureCache.set('rockBump', tex);
   return tex;
 }
 
 export function createPineFoliageTexture(renderer: THREE.WebGLRenderer): THREE.CanvasTexture {
-  const cacheKey = 'pine_foliage';
-  if (proceduralTextureCache.has(cacheKey)) {
-    return proceduralTextureCache.get(cacheKey);
-  }
-
+  const cached = _textureCache.get('pineFoliage');
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
@@ -549,16 +531,13 @@ export function createPineFoliageTexture(renderer: THREE.WebGLRenderer): THREE.C
   }
 
   const tex = configureTexture(new THREE.CanvasTexture(canvas), renderer, true, 3, 3);
-  proceduralTextureCache.set(cacheKey, tex);
+  _textureCache.set('pineFoliage', tex);
   return tex;
 }
 
 export function createSakuraFoliageTexture(renderer: THREE.WebGLRenderer): THREE.CanvasTexture {
-  const cacheKey = 'sakura_foliage';
-  if (proceduralTextureCache.has(cacheKey)) {
-    return proceduralTextureCache.get(cacheKey);
-  }
-
+  const cached = _textureCache.get('sakuraFoliage');
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
@@ -592,16 +571,13 @@ export function createSakuraFoliageTexture(renderer: THREE.WebGLRenderer): THREE
   }
 
   const tex = configureTexture(new THREE.CanvasTexture(canvas), renderer, true, 3, 3);
-  proceduralTextureCache.set(cacheKey, tex);
+  _textureCache.set('sakuraFoliage', tex);
   return tex;
 }
 
 export function createTreeBarkTexture(renderer: THREE.WebGLRenderer): THREE.CanvasTexture {
-  const cacheKey = 'tree_bark';
-  if (proceduralTextureCache.has(cacheKey)) {
-    return proceduralTextureCache.get(cacheKey);
-  }
-
+  const cached = _textureCache.get('treeBark');
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 128;
   canvas.height = 256;
@@ -618,16 +594,13 @@ export function createTreeBarkTexture(renderer: THREE.WebGLRenderer): THREE.Canv
   }
 
   const tex = configureTexture(new THREE.CanvasTexture(canvas), renderer, true, 2, 2);
-  proceduralTextureCache.set(cacheKey, tex);
+  _textureCache.set('treeBark', tex);
   return tex;
 }
 
 export function createGraniteRockTexture(renderer: THREE.WebGLRenderer): THREE.CanvasTexture {
-  const cacheKey = 'granite_rock';
-  if (proceduralTextureCache.has(cacheKey)) {
-    return proceduralTextureCache.get(cacheKey);
-  }
-
+  const cached = _textureCache.get('graniteRock');
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
@@ -666,16 +639,13 @@ export function createGraniteRockTexture(renderer: THREE.WebGLRenderer): THREE.C
   }
 
   const tex = configureTexture(new THREE.CanvasTexture(canvas), renderer, true, 2, 2);
-  proceduralTextureCache.set(cacheKey, tex);
+  _textureCache.set('graniteRock', tex);
   return tex;
 }
 
 export function createTerrainDetailTexture(renderer: THREE.WebGLRenderer): THREE.CanvasTexture {
-  const cacheKey = 'terrain_detail';
-  if (proceduralTextureCache.has(cacheKey)) {
-    return proceduralTextureCache.get(cacheKey);
-  }
-
+  const cached = _textureCache.get('terrainDetail');
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
@@ -694,7 +664,7 @@ export function createTerrainDetailTexture(renderer: THREE.WebGLRenderer): THREE
   }
 
   const tex = configureTexture(new THREE.CanvasTexture(canvas), renderer, true, 42, 42);
-  proceduralTextureCache.set(cacheKey, tex);
+  _textureCache.set('terrainDetail', tex);
   return tex;
 }
 
@@ -703,11 +673,8 @@ export function createTerrainDetailTexture(renderer: THREE.WebGLRenderer): THREE
  * renders as natural billowing vapor plumes rather than hard white spheres.
  */
 export function createSoftSmokePuffTexture(renderer: THREE.WebGLRenderer): THREE.CanvasTexture {
-  const cacheKey = 'smoke_puff';
-  if (proceduralTextureCache.has(cacheKey)) {
-    return proceduralTextureCache.get(cacheKey);
-  }
-
+  const cached = _textureCache.get('softSmoke');
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 128;
   canvas.height = 128;
@@ -742,7 +709,7 @@ export function createSoftSmokePuffTexture(renderer: THREE.WebGLRenderer): THREE
   tex.wrapT = THREE.ClampToEdgeWrapping;
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
   tex.needsUpdate = true;
-  proceduralTextureCache.set(cacheKey, tex);
+  _textureCache.set('softSmoke', tex);
   return tex;
 }
 
@@ -754,11 +721,9 @@ export function createSpeedLimitSignTexture(
   renderer: THREE.WebGLRenderer,
   speedLimit = 40
 ): THREE.CanvasTexture {
-  const cacheKey = `speed_limit_${speedLimit}`;
-  if (proceduralTextureCache.has(cacheKey)) {
-    return proceduralTextureCache.get(cacheKey);
-  }
-
+  const cacheKey = `speedLimit:${speedLimit}`;
+  const cached = _textureCache.get(cacheKey);
+  if (cached) return cached;
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
@@ -794,31 +759,8 @@ export function createSpeedLimitSignTexture(
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
-  proceduralTextureCache.set(cacheKey, tex);
+  _textureCache.set(cacheKey, tex);
   return tex;
-}
-
-/**
- * Preloads essential procedural environment assets for the chosen map to guarantee
- * zero-frame-drop instant transitions during gameplay start.
- */
-export function preloadEssentialProceduralAssets(
-  renderer: THREE.WebGLRenderer,
-  mapId: MapId
-): void {
-  createRoadTexture(renderer, mapId);
-  createPlazaTexture(renderer, mapId);
-  createChevronSignTexture(renderer);
-  createJapaneseRoadSignTexture(renderer, mapId);
-  createBuildingWallTexture(renderer);
-  createRockBumpTexture(renderer);
-  createPineFoliageTexture(renderer);
-  createSakuraFoliageTexture(renderer);
-  createTreeBarkTexture(renderer);
-  createGraniteRockTexture(renderer);
-  createTerrainDetailTexture(renderer);
-  createSoftSmokePuffTexture(renderer);
-  createSpeedLimitSignTexture(renderer, mapId === 'mountain' ? 40 : 50);
 }
 
 
